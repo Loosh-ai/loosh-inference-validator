@@ -1,0 +1,13 @@
+validator.db
+.venv
+.vscode
+.cursor
+fiber
+.DS_Store
+._*
+*.egg-info
+**/__pycache__/**
+*.gguf
+docker/wallets
+
+*.tar

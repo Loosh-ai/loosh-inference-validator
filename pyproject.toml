@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loosh-inference-validator"
+version = "0.1.0"
+authors = [
+    { name = "Loosh Team", email = "team@loosh.ai" },
+]
+description = "A bittensor subnet validator for LLM inference evaluation"
+readme = "README.md"
+requires-python = "==3.12.*"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "bittensor==9.12.1",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "httpx>=0.26.0",
+    "python-dotenv>=1.0.0",
+    "loguru>=0.7.2",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "sqlalchemy>=2.0.0",
+    "aiohttp>=3.9.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.0.0",
+    "python-multipart>=0.0.9",
+    "transformers>=4.37.0",
+    "sentence-transformers>=2.5.0",
+    "scikit-learn>=1.4.0",
+    "seaborn>=0.13.0",
+    "matplotlib>=3.8.0",
+    "requests>=2.31.0",
+    "cryptography==46.0.2",
+    "substrate-interface==1.7.10",
+    "redis>=5.0.0",
+    "huggingface-hub>=0.20.0",
+    # fiber is installed via git clone in Dockerfiles
+]
+
+[project.optional-dependencies]
+# Development dependencies
+dev = [
+    "pytest>=8.0.0",
+    "black>=24.1.0",
+    "isort>=5.13.0",
+    "mypy>=1.8.0",
+    "ruff>=0.2.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "B", "I"]
+ignore = [] 
+
+[tool.uv]
+cache-dir = ".uv-cache"
+link-mode = "copy"
+
