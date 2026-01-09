@@ -25,7 +25,7 @@ Transforms consensus evaluation results into human-readable analytical narrative
 ### Usage
 
 ```python
-from loosh_utilities.Recording.consensus_narrative_generator import (
+from Recording.consensus_narrative_generator import (
     ConsensusNarrativeGenerator, LLMConfig, ConsensusResult
 )
 
@@ -212,8 +212,8 @@ def generate_batch_narratives(results: List[ConsensusResult],
 ### Integration with Evaluation Pipeline
 
 ```python
-from loosh_utilities.Evaluation.consensus_engine import ConsensusEngine
-from loosh_utilities.Recording.consensus_narrative_generator import ConsensusNarrativeGenerator
+from Evaluation.consensus_engine import ConsensusEngine
+from Recording.consensus_narrative_generator import ConsensusNarrativeGenerator
 
 # Complete evaluation and recording pipeline
 def evaluate_and_record(prompt: str, responses: List[str], 

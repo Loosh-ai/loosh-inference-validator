@@ -66,7 +66,7 @@ class ConsensusResult:
 #### Basic Consensus Evaluation
 
 ```python
-from loosh_utilities.Evaluation.consensus_engine import (
+from Evaluation.consensus_engine import (
     ConsensusEngine, ConsensusConfig
 )
 import numpy as np
@@ -251,7 +251,7 @@ def evaluate_large_dataset(dataset, chunk_size=100):
 #### With Recording Tools
 
 ```python
-from loosh_utilities.Recording.consensus_narrative_generator import ConsensusNarrativeGenerator
+from Recording.consensus_narrative_generator import ConsensusNarrativeGenerator
 
 # Evaluate consensus and generate narrative
 result = engine.evaluate_consensus(config)
