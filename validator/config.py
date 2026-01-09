@@ -135,9 +135,10 @@ class ValidatorConfig(BaseSettings):
     )
     
     # Challenge mode configuration
+    # Note: Only push mode is currently supported. Pull mode is deprecated.
     challenge_mode: Literal["push", "pull"] = Field(
         default="push",
-        description="Challenge retrieval mode: 'push' uses queue from POST /challenges, 'pull' uses GET /challenge"
+        description="Challenge retrieval mode. Only 'push' mode is supported (challenges submitted via POST /challenges). 'pull' mode is deprecated."
     )
     
     # Concurrency configuration

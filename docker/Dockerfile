@@ -1,11 +1,7 @@
 # ---------- base stage ----------
-
-# ARG for final stage - must be declared before any FROM that uses it
-ARG OPTIONAL_DEPS=llamacpp
-
-#FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04 AS base
-#FROM python:3.12-slim AS base
-FROM ubuntu:24.04 AS base
+# Note: The validator does NOT run local inference (vllm, llamacpp, etc.)
+# It only uses HTTP API endpoints (OpenAI, Azure OpenAI, Ollama API)
+# If you want local inference, run Ollama/vLLM separately and point the validator to it via API endpoints
 
 # Use BUILD_ENV=dev for ubuntu:24.04, 
 # BUILD_ENV=cuda for nvidia/cuda docker
@@ -72,30 +68,8 @@ RUN uv pip install -p $VENV_NAME --system bittensor && \
      echo "uv run btcli \"\$@\"" >> /usr/local/bin/btcli && \
      chmod +x /usr/local/bin/btcli)
 
-# ---------- vllm stage ----------
-FROM base AS with-vllm
-ARG VENV_NAME=.venv-docker
-ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
-#RUN uv pip install --system -e ".[vllm]"
-
-# ---------- llamacpp stage ----------
-FROM base AS with-llamacpp
-ARG VENV_NAME=.venv-docker
-ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
-#RUN uv pip install --system -e ".[llamacpp]"
-
-# ---------- ollama stage ----------
-FROM base AS with-ollama
-ARG VENV_NAME=.venv-docker
-ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
-#RUN uv pip install --system -e ".[ollama]"
-
-
 # ---------- final stage ----------
-# ARG is declared at top of file - use it in FROM
-FROM with-${OPTIONAL_DEPS} AS final
-# Redeclare ARG to make it available in this stage
-ARG OPTIONAL_DEPS=llamacpp
+FROM base AS final
 ARG VENV_NAME=.venv-docker
 ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
 
@@ -138,10 +112,11 @@ COPY docker/prompt.sh /etc/profile.d/prompt.sh
 # Set PYTHONPATH
 ENV PYTHONPATH="."
 
-# Expose port
+# Expose port (can be overridden via API_PORT env var)
 EXPOSE 8000
 
-# Run the validator
-#CMD ["tail", "-f", "/dev/null"]
-#CMD ["uv", "run", "validator/validator0.py"]
-CMD ["/app/docker/nop.sh"]
+# Run the validator using uvicorn
+# The validator runs as a FastAPI application
+# API_HOST and API_PORT can be set via environment variables (defaults to 0.0.0.0:8000)
+# Using validator_server.py's main block which reads from config
+CMD ["uv", "run", "python", "-m", "validator.validator_server"]

@@ -105,20 +105,28 @@ Then edit `.env` and update the values according to your setup. See `env.example
 
 ### Starting the Validator
 
+The validator runs as a FastAPI application using uvicorn. The API server exposes endpoints for challenge submission and validator management, while the main validation loop runs in the background.
+
 #### Direct Execution
 
 ```bash
-PYTHONPATH=. uv run python -m validator.main
+PYTHONPATH=. uv run uvicorn validator.validator_server:app --host 0.0.0.0 --port 8000
 ```
 
 Or if you have activated the virtual environment:
 
 ```bash
 source .venv/bin/activate  # Linux/Mac
-python -m validator.main
+uvicorn validator.validator_server:app --host 0.0.0.0 --port 8000
 ```
 
-This will automatically use the virtual environment created by `uv sync` and run the validator. The `-m` flag ensures the `validator` module is found correctly in the Python path.
+The host and port can be configured via environment variables (`API_HOST` and `API_PORT` in your `.env` file). Alternatively, you can run it directly:
+
+```bash
+PYTHONPATH=. uv run python -m validator.validator_server
+```
+
+This will automatically read `API_HOST` and `API_PORT` from your `.env` file.
 
 #### Using PM2 (Recommended for Production)
 
@@ -140,6 +148,8 @@ cd loosh-inference-validator
 ```bash
 pm2 start PM2/ecosystem.config.js
 ```
+
+**Note:** The PM2 configuration runs the validator using uvicorn. Make sure to update `PM2/ecosystem.config.js` to use uvicorn if it's not already configured.
 
 3. Check status:
 ```bash
@@ -168,15 +178,21 @@ pm2 delete loosh-inference-validator
 
 **PM2 Configuration:**
 
-The PM2 configuration file is located at `PM2/ecosystem.config.js`. You can customize it by:
+The PM2 configuration file is located at `PM2/ecosystem.config.js`. It runs the validator using uvicorn. You can customize it by:
 
 - Setting `PYTHON_INTERPRETER` environment variable to use a specific Python interpreter (e.g., `.venv/bin/python3`)
 - Setting `VALIDATOR_WORKDIR` environment variable to specify the working directory
+- Setting `API_HOST` and `API_PORT` environment variables to configure the server address
 - Adjusting memory limits, restart policies, and logging paths in the config file
 
 **Example with virtual environment:**
 ```bash
 PYTHON_INTERPRETER=./.venv/bin/python3 pm2 start PM2/ecosystem.config.js
+```
+
+**Example with custom port:**
+```bash
+API_PORT=8020 pm2 start PM2/ecosystem.config.js
 ```
 
 **Note:** The logs directory (`./logs/`) will be created automatically by PM2 if it doesn't exist. Logs are stored in:
@@ -208,26 +224,134 @@ docker run -d \
   -p 8000:8000 \
   -v ~/.bittensor/wallets:/root/.bittensor/wallets \
   -v $(pwd)/validator.db:/app/validator.db \
+  -e API_HOST=0.0.0.0 \
+  -e API_PORT=8000 \
   loosh-inference-validator
 ```
+
+**Note:** The Docker container runs the validator using uvicorn via `validator.validator_server:app`. The API host and port can be configured via `API_HOST` and `API_PORT` environment variables.
 
 ## API Endpoints
 
 - `GET /availability` - Check validator availability
-- `GET /challenges` - Get challenge information
+- `POST /challenges` - Submit a challenge to the validator (push mode)
+- `GET /challenges/stats` - Get challenge queue statistics
 - `POST /register` - Register with validator
 - `GET /stats` - Get validator statistics
 - `POST /set_running` - Set running status
 
+## Inference Configuration
+
+The validator uses LLM inference for generating consensus narratives during the evaluation process. The validator provides flexible options for configuring inference endpoints and models.
+
+### LLM Service
+
+The validator uses `llm_service.py` (`validator/evaluation/Recording/llm_service.py`) to manage LLM inference. This service supports multiple providers and allows you to configure different endpoints for inference:
+
+- **OpenAI**: Standard OpenAI API endpoints (including custom endpoints)
+- **Azure OpenAI**: Azure-hosted OpenAI models
+- **Ollama**: Local or remote Ollama instances
+
+### Configuring Inference Endpoints
+
+The LLM service allows you to configure custom API endpoints through the `LLMConfig` class:
+
+```python
+from validator.evaluation.Recording.llm_service import LLMService, LLMConfig
+
+# Initialize the service
+llm_service = LLMService()
+await llm_service.initialize()
+
+# Register an LLM with a custom endpoint
+llm_service.register_llm(
+    name="my-openai",
+    llm_config=LLMConfig(
+        provider="openai",
+        model="gpt-4",
+        api_key="your-api-key",
+        api_base="https://your-custom-endpoint.com/v1",  # Custom endpoint
+        temperature=0.7,
+        max_tokens=800
+    )
+)
+```
+
+### Supported Providers
+
+- **OpenAI** (`provider="openai"`): Uses `langchain-openai` package
+  - Supports custom `api_base` for self-hosted or proxy endpoints
+  - Requires `langchain-openai` package
+
+- **Azure OpenAI** (`provider="azure_openai"`): Uses `langchain-openai` package
+  - Configure via `api_base` (Azure endpoint) and `provider_specific_params`
+  - Requires `langchain-openai` package
+
+- **Ollama** (`provider="ollama"`): Uses `langchain-ollama` package
+  - Supports local (`http://localhost:11434`) or remote Ollama instances
+  - Requires `langchain-ollama` package
+
+### Local Inference Setup
+
+For running inference locally, see `min_compute.yml` which describes:
+
+- **Hardware Requirements**: Minimum and recommended CPU, GPU, memory, and storage specifications
+- **Recommended Models**: 
+  - **Primary**: Qwen/Qwen2.5-14B-Instruct (recommended for H100 80GB)
+  - **Minimum**: Qwen/Qwen2.5-7B-Instruct-AWQ (for A10 24GB)
+- **Deployment Notes**: Configuration recommendations for vLLM/TGI with continuous batching
+
+The `min_compute.yml` file provides detailed specifications for:
+- GPU requirements (VRAM, compute capability)
+- Model recommendations with quantization options
+- Performance characteristics
+- Deployment best practices
+
+### Environment Variables
+
+Inference configuration can be set via environment variables in your `.env` file:
+
+```env
+# OpenAI Configuration (for evaluation)
+OPENAI_API_URL=https://api.openai.com/v1/chat/completions
+OPENAI_API_KEY=your-api-key
+OPENAI_MODEL=gpt-4
+```
+
+For custom endpoints, you can configure the LLM service programmatically as shown above.
+
+## Challenge Mode
+
+The validator operates in **push mode** only. Challenges are pushed to the validator via the `POST /challenges` endpoint, where they are queued for processing. The validator does not pull challenges from the Challenge API.
+
+### Submitting Challenges
+
+Challenges can be submitted to the validator using the `/challenges` endpoint:
+
+```bash
+curl -X POST http://localhost:8000/challenges \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "challenge-123",
+    "prompt": "Explain the concept of machine learning in simple terms.",
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "max_tokens": 512
+  }'
+```
+
+See the [API Endpoints](#api-endpoints) section for more details.
+
 ## Evaluation Process
 
-1. Validator fetches challenges from Challenge API
-2. Challenges are sent to selected miners
-3. Miners generate responses using their LLM backends
-4. Validator collects responses and calculates embeddings
-5. Consensus score and heatmap are generated
-6. Emissions are allocated based on response quality and speed
-7. Results are stored in the database and sent to Challenge API
+1. Challenges are pushed to the validator via `POST /challenges` endpoint (push mode)
+2. Validator processes challenges from its internal queue
+3. Challenges are sent to selected miners
+4. Miners generate responses using their LLM backends
+5. Validator collects responses and calculates embeddings
+6. Consensus score and heatmap are generated using LLM inference (via `llm_service.py`)
+7. Emissions are allocated based on response quality and speed
+8. Results are stored in the database and sent to Challenge API
 
 ## Database
 
