@@ -38,8 +38,15 @@ loosh-inference-validator/
 
 - Python 3.12+
 - uv (Python package installer) - [Installation instructions](https://github.com/astral-sh/uv)
+- uvicorn (ASGI web server) - Included in dependencies, used to run the FastAPI application
+- fiber (Bittensor network library) - Required for Bittensor network operations (installed manually due to dependency conflicts)
 - Bittensor wallet with sufficient stake
 - Access to Challenge API
+- OpenAI-compatible inference endpoint - Required for generating consensus narratives during evaluation. Can be:
+  - OpenAI API (default)
+  - Azure OpenAI
+  - Ollama (local or remote)
+  - Any OpenAI-compatible API endpoint
 
 ## Installation
 
@@ -344,6 +351,10 @@ See the [API Endpoints](#api-endpoints) section for more details.
 
 ## Evaluation Process
 
+For a detailed explanation of the evaluation pipeline, see [EVALUATION_PROCESS.md](EVALUATION_PROCESS.md).
+
+High-level overview:
+
 1. Challenges are pushed to the validator via `POST /challenges` endpoint (push mode)
 2. Validator processes challenges from its internal queue
 3. Challenges are sent to selected miners
@@ -352,6 +363,15 @@ See the [API Endpoints](#api-endpoints) section for more details.
 6. Consensus score and heatmap are generated using LLM inference (via `llm_service.py`)
 7. Emissions are allocated based on response quality and speed
 8. Results are stored in the database and sent to Challenge API
+
+The evaluation process includes:
+- **Embedding Generation**: Responses are converted to embeddings for similarity analysis
+- **Quality Filtering**: Outlier detection, length filtering, and clustering to identify consensus
+- **Consensus Measurement**: Pairwise similarity analysis to determine agreement among responses
+- **Individual Scoring**: Composite scores based on consensus alignment, quality, and confidence
+- **Heatmap Visualization**: Similarity matrix visualization of response relationships
+- **Narrative Generation**: LLM-generated summaries of the evaluation process
+- **Emissions Calculation**: Reward distribution based on speed, consensus participation, and quality
 
 ## Database
 
