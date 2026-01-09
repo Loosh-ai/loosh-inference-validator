@@ -61,11 +61,9 @@ ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
 # Sync base dependencies with uv
 RUN uv sync
 
-# Clone and install fiber package from git repository into the venv
+# Install fiber package from git repository into the venv
 # Install AFTER uv sync to ensure it's in the venv and not overwritten
-RUN git clone --branch production --depth 1 https://github.com/rayonlabs/fiber.git /tmp/fiber && \
-    uv pip install -p $VENV_NAME "/tmp/fiber[chain]" && \
-    rm -rf /tmp/fiber
+RUN uv pip install -p $VENV_NAME "git+https://github.com/rayonlabs/fiber.git@production#egg=fiber[chain]"
 
 # Install btcli (Bittensor CLI) for wallet management
 RUN uv pip install -p $VENV_NAME --system bittensor && \

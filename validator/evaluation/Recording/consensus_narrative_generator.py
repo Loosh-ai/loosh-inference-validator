@@ -2,7 +2,7 @@ from typing import Dict, Optional
 from dataclasses import dataclass
 import os
 
-from .Inference.llm_service import LLMService, LLMConfig as LLMServiceConfig
+from .llm_service import LLMService, LLMConfig as LLMServiceConfig
 
 
 @dataclass

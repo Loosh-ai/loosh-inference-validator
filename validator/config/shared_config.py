@@ -39,6 +39,7 @@ class WalletConfig(BaseConfig):
     
     wallet_name: str = Field(default="validator", description="Wallet name")
     hotkey_name: str = Field(default="validator", description="Hotkey name")
+    # Note: Fiber only supports wallets in ~/.bittensor/wallets
 
 
 class APIConfig(BaseConfig):

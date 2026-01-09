@@ -93,14 +93,26 @@ async def main_loop():
     test_mode = getattr(config, 'test_mode', False)
     if test_mode:
         logger.info("[TEST MODE] Test mode enabled - will pick first response without evaluation or heatmap generation")
-
+    
     # Load validator keys
-    import os
+    # Note: Fiber only supports wallets in ~/.bittensor/wallets
     from pathlib import Path
     
-    wallet_path = Path(os.path.expanduser("~/.bittensor/wallets")) / config.wallet_name
+    wallet_path = Path.home() / ".bittensor" / "wallets" / config.wallet_name
     hotkey_path = wallet_path / "hotkeys" / config.hotkey_name
     coldkey_path = wallet_path / "coldkey"
+    
+    logger.info(f"Wallet path: {wallet_path}")
+    logger.info(f"Expected hotkey path: {hotkey_path}")
+    logger.info(f"Expected coldkey path: {coldkey_path}")
+    
+    # Verify the paths exist before trying to load
+    if not hotkey_path.exists():
+        logger.error(f"Hotkey file not found at: {hotkey_path}")
+        logger.error(f"Please ensure the hotkey file exists at the expected path")
+    if not coldkey_path.exists():
+        logger.error(f"Coldkey file not found at: {coldkey_path}")
+        logger.error(f"Please ensure the coldkey file exists at the expected path")
     
     try:
         hotkey = load_hotkey_keypair(config.wallet_name, config.hotkey_name)
@@ -116,14 +128,12 @@ async def main_loop():
             f"Expected paths:\n"
             f"  - Hotkey: {hotkey_path}\n"
             f"  - Coldkey: {coldkey_path}\n"
-            f"\nTo create the wallet, run inside the container:\n"
-            f"  docker exec -it loosh-inference-subnet-validator btcli wallet new_coldkey \\\n"
+            f"\nTo create the wallet, run:\n"
+            f"  btcli wallet new_coldkey \\\n"
             f"    --wallet.name {config.wallet_name} \\\n"
-            f"    --wallet.path /root/.bittensor/wallets \\\n"
             f"    --no-use-password --n_words 24\n"
-            f"\n  docker exec -it loosh-inference-subnet-validator btcli wallet new_hotkey \\\n"
+            f"\n  btcli wallet new_hotkey \\\n"
             f"    --wallet.name {config.wallet_name} \\\n"
-            f"    --wallet.path /root/.bittensor/wallets \\\n"
             f"    --hotkey {config.hotkey_name} \\\n"
             f"    --no-use-password --n_words 24\n"
             f"\nThen restart the container:\n"
@@ -140,6 +150,7 @@ async def main_loop():
             f"Error: {str(e)}\n"
             f"\nPlease ensure wallet files are properly configured.\n"
             f"Wallet: {config.wallet_name}, Hotkey: {config.hotkey_name}\n"
+            f"Note: Fiber only supports wallets in ~/.bittensor/wallets\n"
             f"Expected paths:\n"
             f"  - Hotkey: {hotkey_path}\n"
             f"  - Coldkey: {coldkey_path}\n"

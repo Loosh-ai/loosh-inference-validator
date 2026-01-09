@@ -36,6 +36,7 @@ class ValidatorConfig(BaseSettings):
     # Wallet configuration
     wallet_name: str = Field(default="validator", description="Wallet name")
     hotkey_name: str = Field(default="validator", description="Hotkey name")
+    # Note: Fiber only supports wallets in ~/.bittensor/wallets
 
     wallet: WalletConfig = Field(default_factory=WalletConfig)
     
@@ -131,6 +132,18 @@ class ValidatorConfig(BaseSettings):
     test_mode: bool = Field(
         default=False,
         description="Enable test mode - picks first response without evaluation or heatmap generation"
+    )
+    
+    # Challenge mode configuration
+    challenge_mode: Literal["push", "pull"] = Field(
+        default="push",
+        description="Challenge retrieval mode: 'push' uses queue from POST /challenges, 'pull' uses GET /challenge"
+    )
+    
+    # Concurrency configuration
+    max_concurrent_challenges: int = Field(
+        default=10,
+        description="Maximum number of challenges to process concurrently"
     )
 
 

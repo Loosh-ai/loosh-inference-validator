@@ -69,10 +69,10 @@ class BittensorNode:
 
     def load_keys(self):
         """Load hotkey and coldkey using fiber utilities."""
-        import os
         from pathlib import Path
         
-        wallet_path = Path(os.path.expanduser("~/.bittensor/wallets")) / self.config.wallet_name
+        # Note: Fiber only supports wallets in ~/.bittensor/wallets
+        wallet_path = Path.home() / ".bittensor" / "wallets" / self.config.wallet_name
         hotkey_path = wallet_path / "hotkeys" / self.config.hotkey_name
         coldkey_path = wallet_path / "coldkey"
         
@@ -87,17 +87,16 @@ class BittensorNode:
                 f"{'='*70}\n"
                 f"Wallet: {self.config.wallet_name}\n"
                 f"Hotkey: {self.config.hotkey_name}\n"
+                f"Note: Fiber only supports wallets in ~/.bittensor/wallets\n"
                 f"Expected paths:\n"
                 f"  - Hotkey: {hotkey_path}\n"
                 f"  - Coldkey: {coldkey_path}\n"
-                f"\nTo create the wallet, run inside the container:\n"
-                f"  docker exec -it <container-name> btcli wallet new_coldkey \\\n"
+                f"\nTo create the wallet, run:\n"
+                f"  btcli wallet new_coldkey \\\n"
                 f"    --wallet.name {self.config.wallet_name} \\\n"
-                f"    --wallet.path /root/.bittensor/wallets \\\n"
                 f"    --no-use-password --n_words 24\n"
-                f"\n  docker exec -it <container-name> btcli wallet new_hotkey \\\n"
+                f"\n  btcli wallet new_hotkey \\\n"
                 f"    --wallet.name {self.config.wallet_name} \\\n"
-                f"    --wallet.path /root/.bittensor/wallets \\\n"
                 f"    --hotkey {self.config.hotkey_name} \\\n"
                 f"    --no-use-password --n_words 24\n"
                 f"{'='*70}\n"

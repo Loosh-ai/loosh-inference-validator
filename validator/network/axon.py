@@ -139,24 +139,42 @@ def serve_extrinsic(
     bittensor.logging.debug(
         f"Serving axon with: AxonInfo({wallet.hotkey.ss58_address},{ip}:{port}) -> {subtensor.network}:{netuid}:{version}"
     )
-    success, error_message = subtensor._do_serve_axon(
-        wallet=wallet,
-        call_params=params,
-        wait_for_finalization=wait_for_finalization,
-        wait_for_inclusion=wait_for_inclusion,
-    )
-
-    if wait_for_inclusion or wait_for_finalization:
-        if success == True:
-            bittensor.logging.debug(f"Axon served.")
-            return True
+    # SDK v10: _do_serve_axon now returns ExtrinsicResponse instead of tuple
+    try:
+        response = subtensor._do_serve_axon(
+            wallet=wallet,
+            call_params=params,
+            wait_for_finalization=wait_for_finalization,
+            wait_for_inclusion=wait_for_inclusion,
+        )
+        
+        # Handle ExtrinsicResponse object (SDK v10)
+        if hasattr(response, 'is_success'):
+            # ExtrinsicResponse object
+            if response.is_success:
+                bittensor.logging.debug(f"Axon served.")
+                return True
+            else:
+                error_message = getattr(response, 'error_message', 'Unknown error')
+                bittensor.logging.debug(
+                    f"Axon failed to serve with error: {error_message} "
+                )
+                return False
         else:
-            bittensor.logging.debug(
-                f"Axon failed to served with error: {error_message} "
-            )
-            return False
-    else:
-        return True
+            # Fallback for tuple return (backward compatibility)
+            success, error_message = response
+            if success == True:
+                bittensor.logging.debug(f"Axon served.")
+                return True
+            else:
+                bittensor.logging.debug(
+                    f"Axon failed to serve with error: {error_message} "
+                )
+                return False
+    except Exception as e:
+        # Handle any exceptions during axon serving
+        bittensor.logging.error(f"Error serving axon: {e}")
+        return False
 
 # SERVE: serve_extrinsic ]
 # LooshSubnetSubtensor [

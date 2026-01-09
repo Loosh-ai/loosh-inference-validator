@@ -37,6 +37,7 @@ loosh-inference-validator/
 ## Requirements
 
 - Python 3.12+
+- uv (Python package installer) - [Installation instructions](https://github.com/astral-sh/uv)
 - Bittensor wallet with sufficient stake
 - Access to Challenge API
 
@@ -48,57 +49,76 @@ git clone https://github.com/loosh-ai/loosh-inference-validator.git
 cd loosh-inference-validator
 ```
 
-2. Create and activate a virtual environment:
+2. Install uv (if not already installed):
 ```bash
-python -m venv .venv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# or
+pip install uv
+```
+
+3. Install dependencies:
+```bash
+uv sync
+```
+
+This will automatically create a virtual environment and install all dependencies from `pyproject.toml`.
+
+4. Install fiber (required dependency):
+```bash
+# Activate the virtual environment first
+source .venv/bin/activate  # Linux/Mac
+# or
+.venv\Scripts\activate  # Windows
+
+# Install fiber from git repository
+uv pip install "git+https://github.com/rayonlabs/fiber.git@production#egg=fiber[chain]"
+```
+
+Or using regular pip:
+```bash
+pip install "git+https://github.com/rayonlabs/fiber.git@production#egg=fiber[chain]"
+```
+
+**Note:** Fiber must be installed manually due to a dependency version conflict with bittensor:
+
+
+To activate the virtual environment:
+```bash
 source .venv/bin/activate  # Linux/Mac
 # or
 .venv\Scripts\activate  # Windows
 ```
 
-3. Install dependencies:
-```bash
-pip install -e .
-```
-
 ## Configuration
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root by copying the example file:
 
-```env
-NETUID=21
-SUBTENSOR_NETWORK=finney
-SUBTENSOR_ADDRESS=wss://entrypoint-finney.opentensor.ai:443
-WALLET_NAME=validator
-HOTKEY_NAME=validator
-MIN_MINERS=3
-MAX_MINERS=10
-MIN_STAKE_THRESHOLD=100
-CHALLENGE_INTERVAL_SECONDS=300
-CHALLENGE_TIMEOUT_SECONDS=120
-EVALUATION_TIMEOUT_SECONDS=300
-SCORE_THRESHOLD=0.7
-WEIGHTS_INTERVAL_SECONDS=1800
-DB_PATH=validator.db
-CHALLENGE_API_URL=http://localhost:8080
-CHALLENGE_API_KEY=your-api-key
-API_HOST=0.0.0.0
-API_PORT=8000
-HEATMAP_UPLOAD_URL=http://localhost:8080/heatmap/upload  # Deprecated: now uses CHALLENGE_API_URL
-OPENAI_API_URL=https://api.openai.com/v1/chat/completions
-OPENAI_MODEL=gpt-4
-LOG_LEVEL=INFO
+```bash
+cp env.example .env
 ```
+
+Then edit `.env` and update the values according to your setup. See `env.example` for all available configuration options with descriptions.
+
+**Note:** Fiber only supports wallets in `~/.bittensor/wallets`. Custom wallet paths are not supported.
 
 ## Running
 
 ### Starting the Validator
 
-#### Direct Python Execution
+#### Direct Execution
 
 ```bash
-python validator/main.py
+PYTHONPATH=. uv run python -m validator.main
 ```
+
+Or if you have activated the virtual environment:
+
+```bash
+source .venv/bin/activate  # Linux/Mac
+python -m validator.main
+```
+
+This will automatically use the virtual environment created by `uv sync` and run the validator. The `-m` flag ensures the `validator` module is found correctly in the Python path.
 
 #### Using PM2 (Recommended for Production)
 
@@ -217,7 +237,11 @@ The validator uses SQLite by default to store:
 - Evaluation results
 - Statistics
 
-The database file location is configured via `DB_PATH` environment variable.
+The database files are **automatically created** when the validator starts if they don't exist. The database file locations are configured via environment variables:
+- `DB_PATH` - Main validator database (default: `validator.db`)
+- `USERS_DB_PATH` - Users database (default: `users.db`)
+
+Both databases and their schemas are automatically initialized on first startup.
 
 ## Contributing
 
