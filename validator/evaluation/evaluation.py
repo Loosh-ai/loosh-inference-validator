@@ -13,7 +13,7 @@ from validator.challenge.challenge_types import InferenceResponse
 from validator.db.operations import DatabaseManager
 from validator.config import get_validator_config
 
-# Import from loosh-utilities
+# Import from local evaluation modules
 from Evaluation.consensus_engine import ConsensusEngine, ConsensusConfig, ConsensusResult
 from Recording.consensus_narrative_generator import ConsensusNarrativeGenerator, LLMConfig
 from Recording.similarity_heatmap import generate_semantic_similarity_heatmap
