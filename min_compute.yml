@@ -1,0 +1,80 @@
+version: "1.0.0"
+
+compute_spec:
+  validator:
+    cpu:
+      min_cores: 4
+      min_speed: 2.5
+      recommended_cores: 8
+      recommended_speed: 3.5
+      architecture: "x86_64"
+
+    gpu:
+      required: True
+
+      # Minimum: can run the validator narrative step, but may need tighter ctx / concurrency caps.
+      min_vram: 24
+      min_compute_capability: 8.6
+      minimum_gpu: "NVIDIA A10 24GB"
+
+      # Recommended: minimal latency at high volume (continuous batching + high concurrency).
+      recommended_vram: 80
+      recommended_compute_capability: 9.0
+      recommended_gpu: "NVIDIA H100 80GB"
+
+      # Performance reference (H100 PCIe; NVIDIA datasheet)
+      # * TF32/BF16/FP16/FP8/INT8 numbers are "with sparsity" per datasheet.
+      fp64: 26
+      fp64_tensor_core: 51
+      fp32: 51
+      tf32: 756
+      bfloat16_tensor_core: 1513
+      int8_tensor_core: 3026
+
+      # See NVIDIA H100 datasheet for details:
+      # https://www.nvidia.com/content/dam/en-zz/Solutions/gtcs22/data-center/h100/PB-11133-001_v01.pdf
+      # (perf table source used here is NVIDIA H100 Tensor Core GPU datasheet)
+
+    # LLM recommendations for this validator workload:
+    # - validator receives 3-5 candidate responses and generates an ~800-token narrative
+    # - prioritize fast decode, stable instruction following, good summarization
+    llm:
+      primary:
+        gpu: "NVIDIA H100 80GB"
+        dtype: "bf16"
+        model: "Qwen/Qwen2.5-14B-Instruct"
+        huggingface: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct"
+        notes:
+          - "Run BF16 on vLLM/TGI for best latency/throughput."
+          - "Recommend enabling continuous batching + prefix caching."
+
+      minimum:
+        gpu: "NVIDIA A10 24GB"
+        quant: "awq-int4"
+        model: "Qwen/Qwen2.5-7B-Instruct-AWQ"
+        huggingface: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ"
+        notes:
+          - "Very strong small model; easy high-throughput deployment."
+          - "Good fallback tier for cost-sensitive operators."
+
+    memory:
+      min_ram: 32
+      min_swap: 4
+      recommended_swap: 8
+      ram_type: "DDR6"
+
+    storage:
+      min_space: 1000
+      recommended_space: 1000
+      type: "SSD"
+      min_iops: 1000
+      recommended_iops: 5000
+
+    os:
+      name: "Ubuntu"
+      version: 22.04
+
+    network_spec:
+      bandwidth:
+        download: 100
+        upload: 20

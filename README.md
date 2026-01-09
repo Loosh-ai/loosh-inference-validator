@@ -84,7 +84,7 @@ CHALLENGE_API_URL=http://localhost:8080
 CHALLENGE_API_KEY=your-api-key
 API_HOST=0.0.0.0
 API_PORT=8000
-HEATMAP_UPLOAD_URL=http://localhost:8080/upload
+HEATMAP_UPLOAD_URL=http://localhost:8080/heatmap/upload  # Deprecated: now uses CHALLENGE_API_URL
 OPENAI_API_URL=https://api.openai.com/v1/chat/completions
 OPENAI_MODEL=gpt-4
 LOG_LEVEL=INFO
@@ -94,9 +94,82 @@ LOG_LEVEL=INFO
 
 ### Starting the Validator
 
+#### Direct Python Execution
+
 ```bash
 python validator/main.py
 ```
+
+#### Using PM2 (Recommended for Production)
+
+PM2 is a process manager that provides automatic restarts, logging, and monitoring. It's recommended for production deployments.
+
+**Prerequisites:**
+```bash
+npm install -g pm2
+```
+
+**Starting with PM2:**
+
+1. Navigate to the project directory:
+```bash
+cd loosh-inference-validator
+```
+
+2. Start the validator:
+```bash
+pm2 start PM2/ecosystem.config.js
+```
+
+3. Check status:
+```bash
+pm2 status
+```
+
+4. View logs:
+```bash
+pm2 logs loosh-inference-validator
+```
+
+5. Stop the validator:
+```bash
+pm2 stop loosh-inference-validator
+```
+
+6. Restart the validator:
+```bash
+pm2 restart loosh-inference-validator
+```
+
+7. Delete from PM2:
+```bash
+pm2 delete loosh-inference-validator
+```
+
+**PM2 Configuration:**
+
+The PM2 configuration file is located at `PM2/ecosystem.config.js`. You can customize it by:
+
+- Setting `PYTHON_INTERPRETER` environment variable to use a specific Python interpreter (e.g., `.venv/bin/python3`)
+- Setting `VALIDATOR_WORKDIR` environment variable to specify the working directory
+- Adjusting memory limits, restart policies, and logging paths in the config file
+
+**Example with virtual environment:**
+```bash
+PYTHON_INTERPRETER=./.venv/bin/python3 pm2 start PM2/ecosystem.config.js
+```
+
+**Note:** The logs directory (`./logs/`) will be created automatically by PM2 if it doesn't exist. Logs are stored in:
+- `logs/validator-error.log` - Error logs
+- `logs/validator-out.log` - Standard output logs
+- `logs/validator-combined.log` - Combined logs with timestamps
+
+**PM2 Useful Commands:**
+- `pm2 monit` - Real-time monitoring dashboard
+- `pm2 save` - Save current process list
+- `pm2 startup` - Generate startup script for system boot
+- `pm2 logs` - View all logs
+- `pm2 flush` - Clear all logs
 
 ## Docker Deployment
 

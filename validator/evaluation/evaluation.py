@@ -1,4 +1,5 @@
 import os
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -96,14 +97,17 @@ class InferenceValidator:
             narrative = await self.narrative_generator.generate_narrative(result)
             result.consensus_narrative = narrative
             
+            # Store individual scores before calculating emissions (they get overwritten)
+            individual_scores = result.miner_scores if result.miner_scores else {}
+            
             # Calculate emissions
-            emissions = self._calculate_emissions(responses, result, miner_ids)
+            emissions = self._calculate_emissions(responses, result, miner_ids, individual_scores)
             result.miner_scores = emissions
             
             # Upload heatmap if available
             heatmap_path = None
             if result.heatmap_path:
-                heatmap_path = await self._upload_heatmap(result.heatmap_path)
+                heatmap_path = await self._upload_heatmap(result.heatmap_path, challenge_id)
             
             # Log evaluation result
             self.db_manager.log_evaluation_result(
@@ -120,16 +124,73 @@ class InferenceValidator:
             logger.error(f"Error evaluating responses: {str(e)}")
             return 0.0, None, None, {}
     
+    def _calculate_score_difference_bonus(
+        self,
+        individual_scores: Dict[str, float]
+    ) -> tuple[Optional[str], float]:
+        """Calculate bonus multiplier based on score difference between highest and second highest.
+        
+        The bonus scales with the absolute difference between scores:
+        - Small difference (e.g., 1 point) = small bonus (~1.0-1.1x)
+        - Large difference (e.g., 20 points) = large bonus (approaching 1.5x max)
+        
+        Args:
+            individual_scores: Dict mapping response labels to scores
+            
+        Returns:
+            Tuple of (highest_scoring_label, bonus_multiplier) where multiplier is between 1.0 and 1.5
+        """
+        if not individual_scores or len(individual_scores) < 2:
+            return None, 1.0
+        
+        # Get sorted scores (descending)
+        sorted_scores = sorted(individual_scores.items(), key=lambda x: x[1], reverse=True)
+        highest_label, highest_score = sorted_scores[0]
+        second_highest_score = sorted_scores[1][1]
+        
+        # Calculate the absolute difference
+        score_difference = highest_score - second_highest_score
+        
+        # If difference is 0 or negative, no bonus
+        if score_difference <= 0:
+            return highest_label, 1.0
+        
+        # Scale the bonus based on absolute difference
+        # Use tanh to map differences to [0, 1] range, then scale to [1.0, 1.5]
+        # Scale factor controls sensitivity: lower = more sensitive, higher = less sensitive
+        # With scale_factor=0.1: diff of 1 point gives ~1.05x, diff of 10 gives ~1.24x, diff of 20 gives ~1.38x
+        scale_factor = 0.1
+        bonus_multiplier = 1.0 + 0.5 * math.tanh(score_difference * scale_factor)
+        
+        # Ensure we don't exceed 1.5x
+        bonus_multiplier = min(bonus_multiplier, 1.5)
+        
+        return highest_label, bonus_multiplier
+    
     def _calculate_emissions(
         self,
         responses: List[InferenceResponse],
         result: ConsensusResult,
-        miner_ids: Optional[List[int]] = None
+        miner_ids: Optional[List[int]] = None,
+        individual_scores: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
-        """Calculate emissions allocation for miners."""
+        """Calculate emissions allocation for miners.
+        
+        Args:
+            responses: List of inference responses
+            result: Consensus evaluation result
+            miner_ids: Optional list of miner UIDs corresponding to each response
+            individual_scores: Optional dict of individual response scores (label -> score)
+        """
         # Base emissions on response time and consensus score
         total_time = sum(r.response_time_ms for r in responses)
         emissions = {}
+        
+        # Calculate scaled bonus for highest scoring response
+        highest_scoring_label = None
+        bonus_multiplier = 1.0
+        if individual_scores:
+            highest_scoring_label, bonus_multiplier = self._calculate_score_difference_bonus(individual_scores)
         
         for i, response in enumerate(responses):
             # Faster responses get more emissions
@@ -144,15 +205,30 @@ class InferenceValidator:
             if in_consensus:
                 emission *= 1.2  # Bonus for being in consensus
             
+            # Scaled bonus for highest scoring response based on score difference
+            if highest_scoring_label and response_label == highest_scoring_label:
+                emission *= bonus_multiplier
+            
             # Use miner_id from the list if provided, otherwise use index
             miner_id = miner_ids[i] if miner_ids and i < len(miner_ids) else i
             emissions[str(miner_id)] = emission
         
         return emissions
     
-    async def _upload_heatmap(self, filepath: str) -> Optional[str]:
-        """Upload heatmap to storage service."""
+    async def _upload_heatmap(self, filepath: str, challenge_id: int) -> Optional[str]:
+        """Upload heatmap to challenge API.
+        
+        Args:
+            filepath: Path to the heatmap image file
+            challenge_id: The challenge ID associated with this heatmap
+            
+        Returns:
+            The filepath if upload was successful, None otherwise
+        """
         try:
+            # Construct the challenge API endpoint URL
+            upload_url = f"{self.config.challenge_api_url}/heatmap/upload"
+            
             async with aiohttp.ClientSession() as session:
                 with open(filepath, "rb") as f:
                     data = aiohttp.FormData()
@@ -162,14 +238,32 @@ class InferenceValidator:
                         filename=os.path.basename(filepath),
                         content_type="image/png"
                     )
+                    data.add_field("challenge_id", str(challenge_id))
                     
-                    async with session.post(self.config.heatmap_upload_url, data=data) as response:
-                        if response.status == 200:
+                    headers = {
+                        "Authorization": f"Bearer {self.config.challenge_api_key}"
+                    }
+                    
+                    async with session.post(upload_url, data=data, headers=headers) as response:
+                        if response.status == 201:
                             result = await response.json()
-                            return result.get("url")
+                            logger.info(
+                                f"Successfully uploaded heatmap for challenge {challenge_id}: "
+                                f"{result.get('filename', 'unknown')}"
+                            )
+                            # Return the local filepath (challenge API stores it locally)
+                            return result.get("filepath", filepath)
+                        else:
+                            error_text = await response.text()
+                            logger.warning(
+                                f"Failed to upload heatmap for challenge {challenge_id}: "
+                                f"HTTP {response.status} - {error_text}"
+                            )
+                            return None
             
+        except FileNotFoundError:
+            logger.error(f"Heatmap file not found: {filepath}")
             return None
-            
         except Exception as e:
-            logger.error(f"Error uploading heatmap: {str(e)}")
+            logger.error(f"Error uploading heatmap to challenge API: {str(e)}", exc_info=True)
             return None 

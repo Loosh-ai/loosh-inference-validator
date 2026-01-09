@@ -1,21 +1,46 @@
-FROM python:3.12-slim AS base
+# ---------- base stage ----------
+
+# ARG for final stage - must be declared before any FROM that uses it
+ARG OPTIONAL_DEPS=llamacpp
+
+#FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04 AS base
+#FROM python:3.12-slim AS base
+FROM ubuntu:24.04 AS base
+
+# Use BUILD_ENV=dev for ubuntu:24.04, 
+# BUILD_ENV=cuda for nvidia/cuda docker
+# BUILD_ENV=runpod for runpod
+
+ARG BUILD_ENV=dev
+
+FROM ubuntu:24.04 AS base-dev
+FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04 AS base-cuda
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS base-runpod
+
+FROM base-${BUILD_ENV} AS base
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y vim \
+# Install system dependencies and Python 3.12
+RUN apt-get update && apt-get install -y \
+    python3.12 \
+    python3.12-venv \
+    python3-pip \
     telnet \
+    vim \
     socat \
     gcc \
     g++ \
     make \
     cmake \
     curl \
-    git 
+    git \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3
 #    && rm -rf /var/lib/apt/lists/*
 
 # Install uv
-RUN pip install uv
+RUN pip3 install uv --break-system-packages
 
 # Copy dependency files
 COPY pyproject.toml setup.py ./
@@ -49,7 +74,32 @@ RUN uv pip install -p $VENV_NAME --system bittensor && \
      echo "uv run btcli \"\$@\"" >> /usr/local/bin/btcli && \
      chmod +x /usr/local/bin/btcli)
 
-FROM base AS final
+# ---------- vllm stage ----------
+FROM base AS with-vllm
+ARG VENV_NAME=.venv-docker
+ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
+#RUN uv pip install --system -e ".[vllm]"
+
+# ---------- llamacpp stage ----------
+FROM base AS with-llamacpp
+ARG VENV_NAME=.venv-docker
+ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
+#RUN uv pip install --system -e ".[llamacpp]"
+
+# ---------- ollama stage ----------
+FROM base AS with-ollama
+ARG VENV_NAME=.venv-docker
+ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
+#RUN uv pip install --system -e ".[ollama]"
+
+
+# ---------- final stage ----------
+# ARG is declared at top of file - use it in FROM
+FROM with-${OPTIONAL_DEPS} AS final
+# Redeclare ARG to make it available in this stage
+ARG OPTIONAL_DEPS=llamacpp
+ARG VENV_NAME=.venv-docker
+ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
 
 # Build argument for cache busting - set to current timestamp or version
 # These are used in a RUN command to invalidate Docker cache for subsequent layers

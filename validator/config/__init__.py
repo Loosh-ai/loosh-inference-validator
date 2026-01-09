@@ -132,6 +132,18 @@ class ValidatorConfig(BaseSettings):
         default=False,
         description="Enable test mode - picks first response without evaluation or heatmap generation"
     )
+    
+    # Challenge mode configuration
+    challenge_mode: Literal["push", "pull"] = Field(
+        default="push",
+        description="Challenge retrieval mode: 'push' uses queue from POST /challenges, 'pull' uses GET /challenge"
+    )
+    
+    # Concurrency configuration
+    max_concurrent_challenges: int = Field(
+        default=10,
+        description="Maximum number of challenges to process concurrently"
+    )
 
 
 def get_validator_config() -> ValidatorConfig:

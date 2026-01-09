@@ -19,6 +19,8 @@ from validator.challenge_api.get_next_challenge import get_next_challenge_with_r
 from validator.challenge_api.update_challenge_response import process_challenge_results
 from validator.challenge_api.models import Challenge as ChallengeAPIRequest
 from validator.challenge_api.models import ChallengeResponse as ChallengeAPIResponse
+from validator.endpoints.challenges import get_next_challenge as get_next_challenge_from_queue
+from validator.endpoints.challenges import ChallengeCreate
 
 from validator.db.operations import DatabaseManager
 
@@ -30,6 +32,32 @@ from pathlib import Path
 from datetime import timedelta
 
 from validator.config import get_validator_config
+
+
+def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) -> ChallengeAPIResponse:
+    """
+    Convert ChallengeCreate (from push queue) to ChallengeAPIResponse format.
+    
+    Args:
+        challenge_create: Challenge from push queue
+        
+    Returns:
+        ChallengeAPIResponse compatible with existing processing logic
+    """
+    return ChallengeAPIResponse(
+        id=challenge_create.id,
+        correlation_id=challenge_create.correlation_id,
+        prompt=challenge_create.prompt,
+        temperature=challenge_create.temperature,
+        top_p=challenge_create.top_p,
+        max_tokens=challenge_create.max_tokens,
+        metadata=challenge_create.metadata,
+        created_at=challenge_create.created_at or datetime.now(timezone.utc),
+        status=challenge_create.status,
+        requester=challenge_create.requester,
+        response_time_ms=0  # Not applicable for pushed challenges
+    )
+
 
 async def main_loop():
     """Main validator loop."""
@@ -180,7 +208,10 @@ async def main_loop():
     #     last_updated=time.time()
     # ))
 
-    active_challenge_tasks = []  # Track active challenge tasks
+    # Concurrency control
+    max_concurrent = config.max_concurrent_challenges
+    challenge_semaphore = asyncio.Semaphore(max_concurrent)
+    logger.info(f"Concurrency limit: {max_concurrent} concurrent challenges")
 
     # Validate Challenge API configuration
     if not config.challenge_api_url or not config.challenge_api_key:
@@ -203,35 +234,28 @@ async def main_loop():
 
     async with httpx.AsyncClient(timeout=config.challenge_timeout.total_seconds()) as client:
 
-        # Check availability of nodes
-        try:
-            available_nodes = await get_available_nodes(nodes, client, db_manager, hotkey.ss58_address)
-            num_available = len(available_nodes)
-            logger.info(f"available_nodes {available_nodes} num_available {num_available}")
-        except Exception as e:
-            logger.warning(f"Error checking miner availability: {str(e)}. Continuing anyway...")
-            available_nodes = []
-            num_available = 0
+        async def get_available_nodes_cached() -> List[Node]:
+            """Get available nodes with error handling."""
+            try:
+                return await get_available_nodes(nodes, client, db_manager, hotkey.ss58_address)
+            except Exception as e:
+                logger.warning(f"Error checking miner availability: {str(e)}. Continuing anyway...")
+                return []
+        
+        # Initial check
+        available_nodes = await get_available_nodes_cached()
+        num_available = len(available_nodes)
+        logger.info(f"available_nodes {available_nodes} num_available {num_available}")
 
-        try:
-            # Main challenge loop
-            #iteration = 0
-            while True:
+        async def process_challenge(challenge_data: ChallengeAPIResponse) -> None:
+            """
+            Process a single challenge and submit response when ready (completion order).
+            
+            This function processes challenges concurrently and submits responses
+            as soon as they're ready, not in arrival order.
+            """
+            async with challenge_semaphore:
                 try:
-
-                    # GET ChallengeAPIResponse [
-
-                    # Fetch next challenge from API with retries
-                    challenge_data = await get_next_challenge_with_retry2(config, hotkey)
-
-                    if not challenge_data:
-                        logger.info(f"Sleeping for {config.challenge_interval.total_seconds()} seconds before next challenge check...")
-                        await asyncio.sleep(config.challenge_interval.total_seconds())
-                        continue
-
-                    # GET ChallengeAPIResponse ]
-                    # CREATE ChallengeAPIRequest [
-
                     default_model = config.default_model
                     challenge_id = challenge_data.id
                     prompt = challenge_data.prompt
@@ -256,13 +280,16 @@ async def main_loop():
                         requester=challenge_data.requester
                     )
 
-                    # CREATE ChallengeAPIRequest ]
-                    # PROCESS THE CHALLENGE [
-
+                    # Refresh available nodes (in case they changed)
+                    current_available_nodes = await get_available_nodes_cached()
+                    if not current_available_nodes:
+                        logger.warning(f"No available nodes for challenge {challenge_id[:8]}..., skipping")
+                        return
+                    
                     # Create new challenge tasks for available nodes
                     new_challenge_tasks = []
                     
-                    for node in available_nodes:
+                    for node in current_available_nodes:
                         # Create challenge
                         challenge = InferenceChallenge(
                             prompt=prompt,
@@ -292,10 +319,7 @@ async def main_loop():
                         except Exception as e:
                             logger.error(f"Error sending challenge to node {node.node_id}: {str(e)}")
                     
-                    # Add new challenges to active tasks
-                    active_challenge_tasks.extend(new_challenge_tasks)
-
-                    # Process any completed challenges
+                    # Process challenge results (submits response when ready - completion order)
                     await process_challenge_results(
                         new_challenge_tasks,
                         client,
@@ -305,24 +329,50 @@ async def main_loop():
                         node_id=0,
                         test_mode=getattr(config, 'test_mode', False)
                     )
-
-                    # Log status
-                    num_active_challenges = len(active_challenge_tasks)
-                    if num_active_challenges > 0:
-                        logger.info(f"Currently tracking {num_active_challenges} active challenges")
-
-                    # PROCESS THE CHALLENGE ]
-
-                    # SLEEP
-
-                    # Sleep until next challenge interval
-                    await asyncio.sleep(config.challenge_interval.total_seconds())
-
+                    
+                    logger.info(f"Completed processing challenge {challenge_id[:8]}...")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing challenge: {str(e)}", exc_info=True)
+        
+        async def challenge_consumer_loop():
+            """Continuously consume challenges and process them concurrently."""
+            logger.info("Starting challenge consumer loop")
+            while True:
+                try:
+                    # Fetch next challenge based on mode (push or pull)
+                    challenge_data = None
+                    
+                    if config.challenge_mode == "push":
+                        # Use queue-based consumption
+                        challenge_from_queue = await get_next_challenge_from_queue(timeout=1.0)
+                        if challenge_from_queue:
+                            # Convert ChallengeCreate to ChallengeAPIResponse format
+                            challenge_data = convert_challenge_create_to_api_response(challenge_from_queue)
+                    else:
+                        # Use pull mechanism (existing code)
+                        challenge_data = await get_next_challenge_with_retry2(config, hotkey)
+                        if challenge_data:
+                            # Sleep briefly to avoid tight polling loop
+                            await asyncio.sleep(0.1)
+                    
+                    if challenge_data:
+                        # Process in background (don't await - allows concurrent processing)
+                        asyncio.create_task(process_challenge(challenge_data))
+                        logger.debug(f"Started processing challenge {challenge_data.id[:8]}... (concurrent)")
+                    else:
+                        # No challenge available, sleep briefly
+                        await asyncio.sleep(1.0)
+                        
                 except KeyboardInterrupt:
                     break
                 except Exception as e:
-                    logger.error(f"Error in main loop: {str(e)}")
-                    await asyncio.sleep(config.challenge_interval.total_seconds())
+                    logger.error(f"Error in challenge consumer loop: {str(e)}")
+                    await asyncio.sleep(1.0)
+        
+        try:
+            # Start challenge consumer loop
+            await challenge_consumer_loop()
         finally:
             pass
 
