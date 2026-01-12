@@ -162,10 +162,11 @@ async def process_challenge_results(
                         f"for challenge {challenge_task.challenge_id} - skipping evaluation and heatmap generation"
                     )
                     
-                    # Use correlation_id as the challenge ID (for matching with gateway requests)
-                    correlation_id = getattr(challenge_task.challenge_orig, 'correlation_id', None) or challenge_task.challenge_id
+                    # Use challenge_id (UUID) as the ID for response submission
+                    # challenge_id is the UUID from the challenge object
+                    challenge_id_uuid = challenge_task.challenge_orig.id if hasattr(challenge_task.challenge_orig, 'id') else challenge_task.challenge_id
                     response_create = ResponseAPICreate(
-                        id=correlation_id,
+                        id=challenge_id_uuid,
                         text=response.response_text,
                         original_request=challenge_task.challenge_orig
                     )
@@ -280,10 +281,11 @@ async def process_challenge_results(
                 f"(score: {emissions.get(best_miner_id, 0):.3f}) - submitting to Challenge API"
             )
             
-            # Use correlation_id as the challenge ID (for matching with gateway requests)
-            correlation_id = getattr(best_task.challenge_orig, 'correlation_id', None) or best_task.challenge_id
+            # Use challenge_id (UUID) as the ID for response submission
+            # challenge_id is the UUID from the challenge object
+            challenge_id_uuid = best_task.challenge_orig.id if hasattr(best_task.challenge_orig, 'id') else best_task.challenge_id
             response_create = ResponseAPICreate(
-                id=correlation_id,
+                id=challenge_id_uuid,
                 text=best_response.response_text,
                 original_request=best_task.challenge_orig
             )
@@ -316,10 +318,11 @@ async def process_challenge_results(
             logger.warning(f"[EVALUATION] Could not determine best response - using first response")
             # Fallback to first response
             best_task, best_response = collected_responses[0]
-            # Use correlation_id as the challenge ID (for matching with gateway requests)
-            correlation_id = getattr(best_task.challenge_orig, 'correlation_id', None) or best_task.challenge_id
+            # Use challenge_id (UUID) as the ID for response submission
+            # challenge_id is the UUID from the challenge object
+            challenge_id_uuid = best_task.challenge_orig.id if hasattr(best_task.challenge_orig, 'id') else best_task.challenge_id
             response_create = ResponseAPICreate(
-                id=correlation_id,
+                id=challenge_id_uuid,
                 text=best_response.response_text,
                 original_request=best_task.challenge_orig
             )
@@ -338,10 +341,11 @@ async def process_challenge_results(
         logger.warning("[EVALUATION] Falling back to submitting first response without evaluation")
         if collected_responses:
             best_task, best_response = collected_responses[0]
-            # Use correlation_id as the challenge ID (for matching with gateway requests)
-            correlation_id = getattr(best_task.challenge_orig, 'correlation_id', None) or best_task.challenge_id
+            # Use challenge_id (UUID) as the ID for response submission
+            # challenge_id is the UUID from the challenge object
+            challenge_id_uuid = best_task.challenge_orig.id if hasattr(best_task.challenge_orig, 'id') else best_task.challenge_id
             response_create = ResponseAPICreate(
-                id=correlation_id,
+                id=challenge_id_uuid,
                 text=best_response.response_text,
                 original_request=best_task.challenge_orig
             )

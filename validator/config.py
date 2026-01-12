@@ -140,6 +140,18 @@ class ValidatorConfig(BaseSettings):
         description="Enable narrative generation using LLM. When disabled, evaluation and heatmap generation still run, but narrative is skipped."
     )
     
+    # Heatmap generation configuration
+    enable_heatmap_generation: bool = Field(
+        default=True,
+        description="Enable heatmap generation for consensus evaluation. When disabled, heatmaps will not be generated or uploaded."
+    )
+    
+    # Quality plot generation configuration
+    enable_quality_plots: bool = Field(
+        default=False,
+        description="Enable quality plot generation (response length distribution). When enabled, generates quality plots alongside heatmaps when quality filtering is active."
+    )
+    
     # Challenge mode configuration
     # Note: Only push mode (Fiber-encrypted) is supported. Pull mode has been removed.
     # This field is kept for backward compatibility but is ignored - always uses push mode.

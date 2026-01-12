@@ -212,6 +212,9 @@ async def main_loop():
     max_concurrent = config.max_concurrent_challenges
     challenge_semaphore = asyncio.Semaphore(max_concurrent)
     logger.info(f"Concurrency limit: {max_concurrent} concurrent challenges")
+    
+    # Pending challenges queue for when no nodes are available (FIFO)
+    pending_challenges_queue: asyncio.Queue = asyncio.Queue()
 
     # Validate Challenge API configuration
     if not config.challenge_api_url or not config.challenge_api_key:
@@ -359,34 +362,72 @@ async def main_loop():
 
                         # Get available nodes from worker (non-blocking)
                         current_available_nodes = get_available_nodes_cached()
-                        if not current_available_nodes:
-                            logger.warning(f"No available nodes for challenge {challenge_id[:8]}..., skipping")
-                            return
                         
                         # Filter out validators (including self)
                         validator_hotkey = hotkey.ss58_address
                         filtered_nodes = []
                         filtered_count = 0
                         
-                        for node in current_available_nodes:
-                            # Skip validator's own node
-                            if node.hotkey == validator_hotkey:
-                                filtered_count += 1
-                                continue
-                            
-                            # Skip if node is a known validator
-                            if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
-                                filtered_count += 1
-                                continue
-                            
-                            filtered_nodes.append(node)
+                        if current_available_nodes:
+                            for node in current_available_nodes:
+                                # Skip validator's own node
+                                if node.hotkey == validator_hotkey:
+                                    filtered_count += 1
+                                    continue
+                                
+                                # Skip if node is a known validator
+                                if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
+                                    filtered_count += 1
+                                    continue
+                                
+                                filtered_nodes.append(node)
                         
+                        # If no filtered nodes available, queue challenge and wait
                         if not filtered_nodes:
-                            logger.warning(
-                                f"No available nodes (excluding {filtered_count} validator(s)) "
-                                f"for challenge {challenge_id[:8]}..., skipping"
+                            logger.info(
+                                f"No available nodes for challenge {challenge_id[:8]}... "
+                                f"(excluding {filtered_count} validator(s)). "
+                                f"Queuing for FIFO processing when nodes become available..."
                             )
-                            return
+                            # Queue challenge and wait for nodes to become available
+                            await pending_challenges_queue.put(challenge_data)
+                            
+                            # Wait for nodes to become available (check every 2 seconds)
+                            max_wait_time = 300  # 5 minutes max wait
+                            wait_start = time.time()
+                            while (time.time() - wait_start) < max_wait_time:
+                                await asyncio.sleep(2.0)  # Check every 2 seconds
+                                
+                                # Check again for available nodes
+                                current_available_nodes = get_available_nodes_cached()
+                                if current_available_nodes:
+                                    # Re-filter nodes
+                                    filtered_nodes = []
+                                    filtered_count = 0
+                                    for node in current_available_nodes:
+                                        if node.hotkey == validator_hotkey:
+                                            filtered_count += 1
+                                            continue
+                                        if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
+                                            filtered_count += 1
+                                            continue
+                                        filtered_nodes.append(node)
+                                    
+                                    if filtered_nodes:
+                                        logger.info(
+                                            f"Nodes now available for queued challenge {challenge_id[:8]}... "
+                                            f"({len(filtered_nodes)} nodes after filtering)"
+                                        )
+                                        break  # Nodes available, proceed with processing
+                            
+                            # If still no nodes after waiting, log warning but continue to try processing
+                            if not filtered_nodes:
+                                logger.warning(
+                                    f"Still no available nodes for challenge {challenge_id[:8]}... "
+                                    f"after waiting {max_wait_time}s. Will retry processing anyway."
+                                )
+                                # Don't return - continue to try processing (may fail gracefully)
+                                # This ensures challenges are never permanently skipped
                         
                         if filtered_count > 0:
                             logger.debug(
@@ -491,6 +532,62 @@ async def main_loop():
                 # Track active challenge processing tasks
                 active_tasks = set()
                 
+                # Export capacity tracking for health endpoint
+                from validator.endpoints.availability import set_capacity_tracking
+                set_capacity_tracking(active_tasks, challenge_semaphore, max_concurrent)
+                
+                # Background task to process pending challenges when nodes become available
+                async def process_pending_challenges():
+                    """Process pending challenges from queue when nodes become available (FIFO)."""
+                    while True:
+                        try:
+                            # Wait for a pending challenge (with timeout to check if still running)
+                            try:
+                                pending_challenge = await asyncio.wait_for(
+                                    pending_challenges_queue.get(),
+                                    timeout=5.0  # Check every 5 seconds
+                                )
+                            except asyncio.TimeoutError:
+                                continue  # No pending challenges, continue loop
+                            
+                            # Check if nodes are available now
+                            current_available_nodes = get_available_nodes_cached()
+                            if current_available_nodes:
+                                # Re-filter nodes
+                                validator_hotkey = hotkey.ss58_address
+                                filtered_nodes = []
+                                for node in current_available_nodes:
+                                    if node.hotkey == validator_hotkey:
+                                        continue
+                                    if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
+                                        continue
+                                    filtered_nodes.append(node)
+                                
+                                if filtered_nodes:
+                                    # Nodes available, process the challenge
+                                    logger.info(
+                                        f"Processing queued challenge {pending_challenge.id[:8]}... "
+                                        f"({len(filtered_nodes)} nodes now available)"
+                                    )
+                                    task = asyncio.create_task(process_challenge(pending_challenge))
+                                    active_tasks.add(task)
+                                    task.add_done_callback(active_tasks.discard)
+                                else:
+                                    # Still no filtered nodes, put back in queue
+                                    await pending_challenges_queue.put(pending_challenge)
+                            else:
+                                # Still no nodes, put back in queue
+                                await pending_challenges_queue.put(pending_challenge)
+                            
+                            # Small delay to prevent tight loop
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            logger.error(f"Error in pending challenges processor: {e}", exc_info=True)
+                            await asyncio.sleep(1.0)
+                
+                # Start pending challenges processor
+                pending_task = asyncio.create_task(process_pending_challenges())
+                
                 while True:
                     try:
                         # Only use queue-based consumption (push mode)
@@ -517,6 +614,13 @@ async def main_loop():
                             await asyncio.sleep(1.0)
                             
                     except KeyboardInterrupt:
+                        # Cancel pending challenges processor
+                        pending_task.cancel()
+                        try:
+                            await pending_task
+                        except asyncio.CancelledError:
+                            pass
+                        
                         # Wait for active tasks to complete before exiting
                         if active_tasks:
                             logger.info(f"Waiting for {len(active_tasks)} active challenge(s) to complete...")

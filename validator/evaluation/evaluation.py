@@ -112,11 +112,12 @@ class InferenceValidator:
             
             logger.debug(f"[EVALUATION] Generated embeddings: shape={embeddings.shape}")
             
-            # Create consensus engine
+            # Create consensus engine with miner IDs for labels
             consensus_engine = ConsensusEngine(
                 original_prompt=prompt,
                 responses=response_texts,
-                embeddings=embeddings
+                embeddings=embeddings,
+                miner_ids=miner_ids
             )
             
             # Configure consensus evaluation
@@ -128,20 +129,25 @@ class InferenceValidator:
             
             use_outlier_detection = num_responses >= min_responses_for_outlier_detection
             use_clustering = num_responses >= min_responses_for_clustering
-            generate_heatmap = num_responses >= 2  # Need at least 2 for meaningful heatmap
+            # Check config option and minimum response count
+            generate_heatmap = self.config.enable_heatmap_generation and num_responses >= 2  # Need at least 2 for meaningful heatmap
             
             if not use_outlier_detection:
                 logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_responses})")
             if not use_clustering:
                 logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_responses})")
             if not generate_heatmap:
-                logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_responses})")
+                if not self.config.enable_heatmap_generation:
+                    logger.debug(f"[EVALUATION] Heatmap generation disabled by configuration")
+                else:
+                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_responses})")
             
-            # Use correlation_id for heatmap filename if available, otherwise use challenge_id
-            heatmap_id = correlation_id if correlation_id else str(challenge_id)
-            # Sanitize filename (remove invalid characters)
+            # Use challenge_id (UUID) for heatmap filename, but include correlation_id in image title
+            # challenge_id should be a UUID string, sanitize it for filename
             import re
-            heatmap_id_safe = re.sub(r'[^\w\-_.]', '_', str(heatmap_id))
+            challenge_id_str = str(challenge_id)
+            # Sanitize filename (remove invalid characters, but keep UUID format)
+            heatmap_id_safe = re.sub(r'[^\w\-_.]', '_', challenge_id_str)
             
             config = ConsensusConfig(
                 use_clustering=use_clustering,
@@ -150,9 +156,12 @@ class InferenceValidator:
                 apply_quality_filter=True,
                 quality_sensitivity=0.7,
                 generate_heatmap=generate_heatmap,
+                generate_quality_plot=self.config.enable_quality_plots,
                 heatmap_path=f"temp/heatmap_{heatmap_id_safe}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png",
                 lambda_factor=1.0,
-                threshold_min=0.7
+                threshold_min=0.7,
+                challenge_id=str(challenge_id),  # Pass challenge_id (UUID) for image title
+                correlation_id=correlation_id  # Pass correlation_id for image title
             )
             
             # Compute similarity matrix BEFORE consensus evaluation (before filtering)
@@ -257,9 +266,16 @@ class InferenceValidator:
             # Upload heatmap if available
             heatmap_path = None
             if result.heatmap_path:
-                # Use correlation_id for upload if available
-                upload_id = correlation_id if correlation_id else str(challenge_id)
-                heatmap_path = await self._upload_heatmap(result.heatmap_path, upload_id)
+                # Use challenge_id (UUID) for upload
+                upload_id = str(challenge_id)
+                heatmap_path = await self._upload_heatmap(result.heatmap_path, upload_id, file_type="heatmap")
+            
+            # Upload quality plot if available
+            quality_plot_path = None
+            if result.quality_plot_path:
+                # Use challenge_id (UUID) for upload
+                upload_id = str(challenge_id)
+                quality_plot_path = await self._upload_heatmap(result.quality_plot_path, upload_id, file_type="quality_plot")
             
             # Log evaluation result
             self.db_manager.log_evaluation_result(
@@ -273,7 +289,7 @@ class InferenceValidator:
             return consensus_score_float, heatmap_path, narrative, emissions_float
             
         except Exception as e:
-            logger.error(f"Error evaluating responses: {str(e)}")
+            logger.error(f"Error evaluating responses: {str(e)}", exc_info=True)
             return 0.0, None, None, {}
     
     def _calculate_score_difference_bonus(
@@ -368,12 +384,13 @@ class InferenceValidator:
         
         return emissions
     
-    async def _upload_heatmap(self, filepath: str, challenge_id: str) -> Optional[str]:
-        """Upload heatmap to challenge API.
+    async def _upload_heatmap(self, filepath: str, challenge_id: str, file_type: str = "heatmap") -> Optional[str]:
+        """Upload heatmap or quality plot to challenge API and delete local file on success.
         
         Args:
-            filepath: Path to the heatmap image file
-            challenge_id: The challenge ID (correlation_id) associated with this heatmap
+            filepath: Path to the image file (heatmap or quality plot)
+            challenge_id: The challenge ID (UUID) associated with this file
+            file_type: Type of file - "heatmap" (default) or "quality_plot"
             
         Returns:
             The filepath if upload was successful, None otherwise
@@ -382,6 +399,20 @@ class InferenceValidator:
             # Construct the challenge API endpoint URL
             upload_url = f"{self.config.challenge_api_url}/heatmap/upload"
             
+            # Determine content type from file extension
+            file_ext = os.path.splitext(filepath)[1].lower()
+            content_type_map = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }
+            content_type = content_type_map.get(file_ext, "image/png")  # Default to PNG
+            
+            # Determine file type label for logging
+            file_type_label = "heatmap" if file_type == "heatmap" else "quality plot"
+            
             async with aiohttp.ClientSession() as session:
                 with open(filepath, "rb") as f:
                     data = aiohttp.FormData()
@@ -389,9 +420,10 @@ class InferenceValidator:
                         "file",
                         f,
                         filename=os.path.basename(filepath),
-                        content_type="image/png"
+                        content_type=content_type
                     )
                     data.add_field("challenge_id", str(challenge_id))
+                    data.add_field("file_type", file_type)
                     
                     headers = {
                         "X-API-Key": self.config.challenge_api_key
@@ -401,22 +433,30 @@ class InferenceValidator:
                         if response.status == 201:
                             result = await response.json()
                             logger.info(
-                                f"Successfully uploaded heatmap for challenge {challenge_id}: "
+                                f"Successfully uploaded {file_type_label} for challenge {challenge_id}: "
                                 f"{result.get('filename', 'unknown')}"
                             )
-                            # Return the local filepath (challenge API stores it locally)
+                            
+                            # Delete local file after successful upload
+                            try:
+                                os.remove(filepath)
+                                logger.debug(f"Deleted local {file_type_label} file: {filepath}")
+                            except OSError as e:
+                                logger.warning(f"Failed to delete local {file_type_label} file {filepath}: {e}")
+                            
+                            # Return the filepath from challenge API (if provided)
                             return result.get("filepath", filepath)
                         else:
                             error_text = await response.text()
                             logger.warning(
-                                f"Failed to upload heatmap for challenge {challenge_id}: "
+                                f"Failed to upload {file_type_label} for challenge {challenge_id}: "
                                 f"HTTP {response.status} - {error_text}"
                             )
                             return None
             
         except FileNotFoundError:
-            logger.error(f"Heatmap file not found: {filepath}")
+            logger.error(f"{file_type_label.capitalize()} file not found: {filepath}")
             return None
         except Exception as e:
-            logger.error(f"Error uploading heatmap to challenge API: {str(e)}", exc_info=True)
+            logger.error(f"Error uploading {file_type_label} to challenge API: {str(e)}", exc_info=True)
             return None 
