@@ -11,3 +11,5 @@ fiber
 docker/wallets
 
 *.tar
+.env
+temp/

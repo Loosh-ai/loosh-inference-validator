@@ -3,10 +3,11 @@ from typing import Optional, List, Dict, Any
 
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import sessionmaker, Session
+from loguru import logger
 
 from validator.db.schema import (
     Base, Miner, InferenceChallenge, InferenceResponse,
-    EvaluationResult, MinerScore
+    EvaluationResult, MinerScore, SybilDetectionResult
 )
 from validator.challenge.challenge_types import InferenceResponse as ChallengeResponse
 
@@ -163,4 +164,44 @@ class DatabaseManager:
                     "created_at": score.created_at
                 }
                 for score in scores
-            ] 
+            ]
+    
+    def log_sybil_detection_result(
+        self,
+        challenge_id: Optional[int],
+        suspicious_pairs: List[Dict[str, Any]],
+        suspicious_groups: List[Dict[str, Any]],
+        analysis_report: str,
+        high_similarity_threshold: float,
+        very_high_similarity_threshold: float
+    ) -> None:
+        """Log sybil detection results for analysis."""
+        with self.get_session() as session:
+            result = SybilDetectionResult(
+                challenge_id=challenge_id,
+                suspicious_pairs_count=len(suspicious_pairs),
+                suspicious_groups_count=len(suspicious_groups),
+                suspicious_pairs=suspicious_pairs,
+                suspicious_groups=suspicious_groups,
+                analysis_report=analysis_report,
+                high_similarity_threshold=high_similarity_threshold,
+                very_high_similarity_threshold=very_high_similarity_threshold
+            )
+            session.add(result)
+            session.commit()
+    
+    def delete_sybil_detection_result(self, record_id: int) -> bool:
+        """Delete a sybil detection result by ID after successful submission."""
+        try:
+            with self.get_session() as session:
+                record = session.query(SybilDetectionResult).filter(
+                    SybilDetectionResult.id == record_id
+                ).first()
+                if record:
+                    session.delete(record)
+                    session.commit()
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Error deleting sybil detection result {record_id}: {e}", exc_info=True)
+            return False 

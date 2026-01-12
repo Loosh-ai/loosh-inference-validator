@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict, Literal
 from dataclasses import dataclass
+from datetime import datetime
 import numpy as np
 import os
 import matplotlib.pyplot as plt
@@ -18,10 +19,13 @@ class ConsensusConfig:
     apply_quality_filter: bool = False
     quality_sensitivity: float = 0.5  # Lower = stricter
     generate_heatmap: bool = False
-    heatmap_path: str = "./output/consensus_similarity_heatmap.png"
+    generate_quality_plot: bool = False  # Enable quality plot generation
+    heatmap_path: str = "./output/consensus_similarity_heatmap.jpg"
     lambda_factor: float = 1.0
     threshold_min: float = 0.7
     polarity_agreement_min: float = 0.8
+    challenge_id: Optional[str] = None  # Challenge ID (UUID) for heatmap title
+    correlation_id: Optional[str] = None  # Correlation ID for heatmap title
 
 
 @dataclass
@@ -47,11 +51,16 @@ class ConsensusEngine:
         responses: List[str],
         embeddings: List[np.ndarray],
         confidences: Optional[List[float]] = None,
-        polarities: Optional[List[Literal["affirmative", "negative"]]] = None
+        polarities: Optional[List[Literal["affirmative", "negative"]]] = None,
+        miner_ids: Optional[List[int]] = None
     ):
         self.original_prompt = original_prompt
         self.all_responses = responses
-        self.all_labels = [f"R{i+1}" for i in range(len(responses))]
+        # Create labels with miner UIDs if available, otherwise use R1, R2, etc.
+        if miner_ids and len(miner_ids) == len(responses):
+            self.all_labels = [str(uid) for uid in miner_ids]
+        else:
+            self.all_labels = [f"R{i+1}" for i in range(len(responses))]
         self.all_embeddings = np.array(embeddings)
         self.all_confidences = np.array(confidences) if confidences is not None else np.ones(len(responses))
         self.embeddings = np.array(embeddings)
@@ -79,12 +88,24 @@ class ConsensusEngine:
 
     def _apply_clustering_filter(self, sim_matrix: np.ndarray) -> np.ndarray:
         distance_matrix = 1 - sim_matrix
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=0.5,
-            affinity='precomputed',
-            linkage='average'
-        )
+        # In scikit-learn 1.2+, 'affinity' was replaced with 'metric'
+        # For precomputed distance matrices, use metric='precomputed'
+        try:
+            # Try new API (scikit-learn >= 1.2)
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.5,
+                metric='precomputed',
+                linkage='average'
+            )
+        except TypeError:
+            # Fallback to old API (scikit-learn < 1.2)
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.5,
+                affinity='precomputed',
+                linkage='average'
+            )
         labels = clustering.fit_predict(distance_matrix)
         dominant_label = np.argmax(np.bincount(labels))
         mask = labels == dominant_label
@@ -129,28 +150,156 @@ class ConsensusEngine:
         plt.xlabel("Word Count")
         plt.ylabel("Number of Responses")
         plt.tight_layout()
-        quality_path = path.replace(".png", "_quality.png")
+        # Generate quality plot path - keep as PNG for quality plots
+        base_path = path.rsplit('.', 1)[0] if '.' in path else path
+        quality_path = base_path + "_quality.png"
         plt.savefig(quality_path)
         plt.close()
+        
+        # Post-process with PIL to optimize PNG file size (lossless compression)
+        try:
+            from PIL import Image
+            img = Image.open(quality_path)
+            
+            # Convert to RGB if needed (lossless if no transparency)
+            if img.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            elif img.mode == 'P':
+                img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save with maximum lossless compression
+            img.save(quality_path, 'PNG', optimize=True, compress_level=9)
+        except (ImportError, Exception):
+            pass
+        
         return quality_path
 
 
-    def _generate_heatmap(self, sim_matrix: np.ndarray, path: str):
+    def _generate_heatmap(self, sim_matrix: np.ndarray, path: str, challenge_id: Optional[str] = None, correlation_id: Optional[str] = None) -> str:
+        """Generate heatmap and return the actual file path."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        plt.figure(figsize=(10, 8))
+        
+        # Target width: 500px at 100 DPI = 5 inches
+        # Maintain aspect ratio (original was 10x8, so ratio is 1.25:1)
+        target_width_px = 500
+        dpi = 100
+        width_inches = target_width_px / dpi  # 5 inches
+        height_inches = width_inches / 1.25  # 4 inches (maintain aspect ratio)
+        
+        plt.figure(figsize=(width_inches, height_inches), dpi=dpi)
+        
+        # Determine color scale bounds
+        # For similarity matrices, values are typically between 0 and 1
+        matrix_min = float(np.min(sim_matrix))
+        matrix_max = float(np.max(sim_matrix))
+        matrix_range = matrix_max - matrix_min
+        
+        # Set explicit color scale bounds to ensure colors are visible
+        # Always use 0.0 to 1.0 range for similarity scores to ensure consistent coloring
+        vmin = 0.0
+        vmax = 1.0
+        
+        # If all values are very similar or identical, still use full range for color visibility
+        # This ensures the heatmap shows colors even when responses are very similar
+        if matrix_range < 0.01:
+            # Values are nearly identical - use full 0-1 range to show color gradient
+            # The actual values will map to the appropriate part of the colormap
+            vmin = 0.0
+            vmax = 1.0
+        else:
+            # Use actual range with small padding for better visualization
+            vmin = max(0.0, matrix_min - 0.05)
+            vmax = min(1.0, matrix_max + 0.05)
+        
+        # Only show annotations for smaller matrices to reduce file size
+        # For larger matrices, annotations can significantly increase file size
+        n = sim_matrix.shape[0]
+        show_annotations = n <= 5  # Only annotate if 5 or fewer responses
+        
         sns.heatmap(
             sim_matrix,
-            annot=True,
-            fmt=".2f",
+            annot=show_annotations,  # Conditional annotations
+            fmt=".2f" if show_annotations else None,
             cmap="coolwarm",
+            vmin=vmin,
+            vmax=vmax,
+            center=None,  # Don't center - use full range for better color variation
             xticklabels=self.labels,
-            yticklabels=self.labels
+            yticklabels=self.labels,
+            cbar_kws={"label": "Similarity Score"}  # Add colorbar label
         )
-        plt.title("Consensus Similarity Heatmap")
-        plt.xticks(rotation=45, ha='right')
+        
+        # Build title with challenge_id (UUID) and correlation_id (if available)
+        title = "Consensus Similarity Heatmap"
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        if challenge_id:
+            title = f"{title}\nChallenge ID: {challenge_id}"
+        if correlation_id:
+            title = f"{title}\nCorrelation ID: {correlation_id}"
+        title = f"{title}\nTimestamp: {timestamp}"
+        
+        # Adjust font sizes for smaller figure (500px vs original ~800px)
+        plt.title(title, fontsize=8)
+        plt.xticks(rotation=45, ha='right', fontsize=7)
+        plt.yticks(fontsize=7)
         plt.tight_layout()
-        plt.savefig(path)
+        
+        # Ensure path uses .png extension
+        png_path = path
+        if not png_path.endswith('.png'):
+            png_path = path.rsplit('.', 1)[0] + '.png' if '.' in path else path + '.png'
+        
+        # Save as PNG (original working format)
+        plt.savefig(
+            png_path,
+            dpi=100,  # Standard DPI
+            bbox_inches='tight',
+            facecolor='white'
+        )
         plt.close()
+        
+        # Post-process with PIL to optimize PNG file size (lossless compression)
+        try:
+            from PIL import Image
+            # Open the saved PNG
+            img = Image.open(png_path)
+            
+            # Convert to RGB if needed (PNG can be RGBA, but RGB is smaller)
+            # This is lossless if there's no actual transparency
+            if img.mode in ('RGBA', 'LA'):
+                # Create white background for any transparency
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
+                img = background
+            elif img.mode == 'P':
+                # Palette mode - convert to RGB for better compression control
+                img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save with maximum lossless compression
+            # compress_level=9 is maximum compression (slower but smaller)
+            # optimize=True enables additional optimization passes
+            img.save(
+                png_path,
+                'PNG',
+                optimize=True,  # Enable optimization (lossless)
+                compress_level=9  # Maximum compression (0-9, lossless)
+            )
+        except ImportError:
+            # PIL/Pillow not available, skip optimization
+            pass
+        except Exception as e:
+            # If optimization fails, keep original
+            # Don't log as error since this is optional optimization
+            pass
+        
+        # Return the actual PNG path
+        return png_path
 
     def _compute_individual_scores(
         self, 
@@ -284,10 +433,16 @@ class ConsensusEngine:
         )
 
         quality_path = None
+        actual_heatmap_path = None
         if config.generate_heatmap:
-            self._generate_heatmap(sim_matrix, config.heatmap_path)
-            if config.apply_quality_filter:
-                quality_path = self._generate_quality_plot(config.heatmap_path)
+            actual_heatmap_path = self._generate_heatmap(
+                sim_matrix, 
+                config.heatmap_path, 
+                challenge_id=config.challenge_id,
+                correlation_id=config.correlation_id
+            )
+            if config.generate_quality_plot and config.apply_quality_filter:
+                quality_path = self._generate_quality_plot(actual_heatmap_path)
 
         in_consensus = {l: r for l, r in zip(self.labels, self.responses)}
         out_of_consensus = {
@@ -309,7 +464,7 @@ class ConsensusEngine:
             similarity_score=theta,
             weighted_score=weighted_score,
             polarity_agreement=polarity_score,
-            heatmap_path=config.heatmap_path if config.generate_heatmap else None,
+            heatmap_path=actual_heatmap_path if config.generate_heatmap else None,
             consensus_achieved=consensus,
             quality_plot_path=quality_path,
             consensus_narrative=None,

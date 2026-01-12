@@ -134,17 +134,54 @@ class ValidatorConfig(BaseSettings):
         description="Enable test mode - picks first response without evaluation or heatmap generation"
     )
     
+    # Narrative generation configuration
+    enable_narrative_generation: bool = Field(
+        default=True,
+        description="Enable narrative generation using LLM. When disabled, evaluation and heatmap generation still run, but narrative is skipped."
+    )
+    
+    # Heatmap generation configuration
+    enable_heatmap_generation: bool = Field(
+        default=True,
+        description="Enable heatmap generation for consensus evaluation. When disabled, heatmaps will not be generated or uploaded."
+    )
+    
+    # Quality plot generation configuration
+    enable_quality_plots: bool = Field(
+        default=False,
+        description="Enable quality plot generation (response length distribution). When enabled, generates quality plots alongside heatmaps when quality filtering is active."
+    )
+    
     # Challenge mode configuration
-    # Note: Only push mode is currently supported. Pull mode is deprecated.
-    challenge_mode: Literal["push", "pull"] = Field(
+    # Note: Only push mode (Fiber-encrypted) is supported. Pull mode has been removed.
+    # This field is kept for backward compatibility but is ignored - always uses push mode.
+    challenge_mode: Literal["push"] = Field(
         default="push",
-        description="Challenge retrieval mode. Only 'push' mode is supported (challenges submitted via POST /challenges). 'pull' mode is deprecated."
+        description="Challenge retrieval mode. Only 'push' mode is supported (Fiber-encrypted challenges via POST /fiber/challenge). Pull mode has been removed."
     )
     
     # Concurrency configuration
     max_concurrent_challenges: int = Field(
         default=10,
         description="Maximum number of challenges to process concurrently"
+    )
+    max_concurrent_availability_checks: int = Field(
+        default=20,
+        description="Maximum number of concurrent miner availability checks (prevents connection pool exhaustion)"
+    )
+    
+    # Fiber MLTS Configuration
+    fiber_key_ttl_seconds: int = Field(
+        default=3600,
+        description="Time-to-live for Fiber symmetric keys in seconds (default: 1 hour)"
+    )
+    fiber_handshake_timeout_seconds: int = Field(
+        default=30,
+        description="Timeout for Fiber handshake operations in seconds"
+    )
+    fiber_enable_key_rotation: bool = Field(
+        default=True,
+        description="Enable automatic key rotation for Fiber symmetric keys"
     )
 
 

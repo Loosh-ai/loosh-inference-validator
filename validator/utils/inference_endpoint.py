@@ -56,3 +56,4 @@ def get_config_dependency():
     from validator.config import get_validator_config
     return get_validator_config()
 
+
