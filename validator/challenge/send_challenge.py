@@ -12,6 +12,23 @@ from validator.challenge.challenge_types import (
 )
 from validator.db.operations import DatabaseManager
 from validator.challenge_api.models import Challenge
+from validator.config import ValidatorConfig
+
+# Global Fiber client for miner communication
+_miner_fiber_client = None
+
+def get_miner_fiber_client(validator_hotkey_ss58: str, config: ValidatorConfig):
+    """Get or create global MinerFiberClient instance."""
+    global _miner_fiber_client
+    if _miner_fiber_client is None:
+        from validator.network.fiber_client_miner import MinerFiberClient
+        _miner_fiber_client = MinerFiberClient(
+            validator_hotkey_ss58=validator_hotkey_ss58,
+            config=config,
+            key_ttl_seconds=config.fiber_key_ttl_seconds,
+            handshake_timeout_seconds=config.fiber_handshake_timeout_seconds
+        )
+    return _miner_fiber_client
 
 async def send_inference_challenge(
     client: httpx.AsyncClient,
@@ -20,29 +37,69 @@ async def send_inference_challenge(
     challenge: InferenceChallenge,
     miner_hotkey: str,
     db_manager: DatabaseManager,
-    node_id: int
+    node_id: int,
+    config: ValidatorConfig,
+    validator_hotkey_ss58: str,
+    pipeline_timing: Optional[Any] = None
 ) -> Optional[InferenceResponse]:
-    """Send an inference challenge to a miner and wait for response."""
+    """
+    Send an inference challenge to a miner using Fiber MLTS encryption.
+    
+    Args:
+        client: HTTP client for making requests
+        server_address: Miner server address
+        challenge_id: Challenge ID
+        challenge: Inference challenge to send
+        miner_hotkey: Miner's hotkey (for logging)
+        db_manager: Database manager for logging responses
+        node_id: Miner node ID
+        config: Validator configuration (required for Fiber)
+        validator_hotkey_ss58: Validator's SS58 address (required for Fiber)
+    
+    Returns:
+        InferenceResponse if successful, None otherwise
+    """
     try:
         start_time = time.time()
         
-        # Send challenge to miner
-        response = await client.post(
-            f"{server_address}/inference",
-            json=challenge.model_dump(mode="json"),
-            headers={"validator-hotkey": miner_hotkey},
-            timeout=5*60.0  # 5*60 second timeout for inference
+        # Use Fiber-encrypted communication (required)
+        fiber_client = get_miner_fiber_client(validator_hotkey_ss58, config)
+        
+        # Include timing data in challenge metadata if available
+        challenge_data = challenge.model_dump(mode="json")
+        if pipeline_timing:
+            if 'metadata' not in challenge_data:
+                challenge_data['metadata'] = {}
+            challenge_data['metadata']['timing_data'] = pipeline_timing.to_dict()
+        
+        response_data = await fiber_client.send_encrypted_challenge(
+            miner_endpoint=server_address,
+            challenge_data=challenge_data,
+            client=client
         )
         
-        if response.status_code != 200:
-            logger.error(f"Error from miner {node_id}: {response.status_code} - {response.text}")
+        if not response_data:
+            logger.error(f"Error from miner {node_id}: Fiber challenge failed")
             return None
-            
-        response_data = response.json()
+        
         response_time_ms = int((time.time() - start_time) * 1000)
         
         # Extract correlation_id from miner response if present, otherwise use from challenge
         correlation_id = response_data.get("correlation_id") or challenge.correlation_id
+        
+        # Extract timing data from miner response if present
+        if pipeline_timing and isinstance(response_data, dict) and response_data.get("metadata") and 'timing_data' in response_data.get("metadata", {}):
+            try:
+                miner_timing_data = response_data['metadata']['timing_data']
+                if isinstance(miner_timing_data, dict):
+                    # Merge miner timing stages into pipeline timing
+                    miner_timing = PipelineTiming.from_dict(miner_timing_data)
+                    # Add miner stages to our pipeline timing
+                    for stage in miner_timing.stages:
+                        if stage.stage_name in [PipelineStages.MINER_INFERENCE, PipelineStages.MINER_RESPONSE]:
+                            pipeline_timing.stages.append(stage)
+            except Exception as e:
+                logger.debug(f"Could not merge miner timing data: {e}")
         
         # Create response object
         inference_response = InferenceResponse(
@@ -56,6 +113,7 @@ async def send_inference_challenge(
         logger.info(
             f"Miner {node_id} responded to challenge {challenge_id} | "
             f"time: {response_time_ms}ms | "
+            f"protocol: Fiber MLTS | "
             f"response: {response_preview}"
         )
         
@@ -70,7 +128,7 @@ async def send_inference_challenge(
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
-        logger.error(f"Error sending challenge to miner {node_id}: {error_msg}")
+        logger.error(f"Error sending Fiber-encrypted challenge to miner {node_id}: {error_msg}")
         return None
 
 async def send_challenge(
@@ -81,9 +139,29 @@ async def send_challenge(
     challenge_orig: Challenge,
     miner_hotkey: str,
     db_manager: DatabaseManager,
-    node_id: int
+    node_id: int,
+    config: ValidatorConfig,
+    validator_hotkey_ss58: str,
+    pipeline_timing: Optional[Any] = None
 ) -> ChallengeTask:
-    """Send a challenge to a miner and return a task for tracking the response."""
+    """
+    Send a challenge to a miner using Fiber MLTS encryption and return a task for tracking the response.
+    
+    Args:
+        client: HTTP client for making requests
+        server_address: Miner server address
+        challenge_id: Challenge ID
+        challenge: Inference challenge to send
+        challenge_orig: Original challenge object
+        miner_hotkey: Miner's hotkey
+        db_manager: Database manager
+        node_id: Miner node ID
+        config: Validator configuration (required for Fiber)
+        validator_hotkey_ss58: Validator's SS58 address (required for Fiber)
+    
+    Returns:
+        ChallengeTask for tracking the response
+    """
     timestamp = datetime.utcnow()
     
     # Create task for sending challenge
@@ -95,7 +173,10 @@ async def send_challenge(
             challenge=challenge,
             miner_hotkey=miner_hotkey,
             db_manager=db_manager,
-            node_id=node_id
+            node_id=node_id,
+            config=config,
+            validator_hotkey_ss58=validator_hotkey_ss58,
+            pipeline_timing=pipeline_timing
         )
     )
     

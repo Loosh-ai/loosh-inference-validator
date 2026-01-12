@@ -56,32 +56,14 @@ def verify_api_key(
     authorization: Optional[str] = Header(None),
     config: ValidatorConfig = Depends(get_config_dependency)
 ) -> bool:
-    """Verify the API key from Authorization header if configured."""
-    # If no API key is configured, allow all requests
-    if not hasattr(config, 'challenge_push_api_key') or not config.challenge_push_api_key:
-        return True
+    """
+    Verify the API key from Authorization header (DEPRECATED).
     
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header"
-        )
-    
-    # Extract Bearer token
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Authorization header format. Expected 'Bearer <token>'"
-        )
-    
-    token = authorization[7:]  # Remove "Bearer " prefix
-    
-    if token != config.challenge_push_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key"
-        )
-    
+    This function is deprecated. API key authentication has been replaced with
+    Fiber MLTS encryption. Use the /fiber/challenge endpoint instead.
+    """
+    # Always return True - API key auth is disabled in favor of Fiber
+    # This function is kept for backward compatibility only
     return True
 
 
@@ -94,11 +76,14 @@ def verify_api_key(
 )
 async def receive_challenge(
     challenge: ChallengeCreate,
-    _authorized: bool = True, #Depends(verify_api_key),
+    _authorized: bool = True,  # API key auth disabled - use Fiber-encrypted /fiber/challenge endpoint instead
     config: ValidatorConfig = Depends(get_config_dependency)
 ) -> Dict[str, Any]:
     """
-    Receive a challenge pushed from the challenge API.
+    Receive a challenge pushed from the challenge API (legacy endpoint).
+    
+    DEPRECATED: This endpoint is kept for backward compatibility during migration.
+    New challenges should use the Fiber-encrypted /fiber/challenge endpoint.
     
     The challenge is added to an internal queue for processing by the validator.
     """

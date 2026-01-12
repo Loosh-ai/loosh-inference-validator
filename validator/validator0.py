@@ -34,7 +34,7 @@ except ImportError as e:
     get_adapter = None  # type: ignore
 
 from validator.network.bittensor_node import BittensorNode
-from validator.challenge_api.get_next_challenge import get_next_challenge_with_retry2
+# Pull-based challenge fetching removed - only push mode (Fiber) is supported
 from validator.challenge.challenge_types import InferenceResponse
 from validator.db.operations import DatabaseManager
 from validator.evaluation.evaluation import InferenceValidator
@@ -214,64 +214,19 @@ class Validator:
         self.running = True
 
     async def process(self):
-        config = self.config
-        node = self.node
-
-        while self.running:
-            try:
-                # Fetch next challenge from API with retries
-                challenge_data = await get_next_challenge_with_retry2(config, self.node.hotkey)
-
-                if not challenge_data:
-                    bt.logging.info(f"Sleeping for {config.challenge_interval.total_seconds()} seconds before next challenge check...")
-                    await asyncio.sleep(config.challenge_interval.total_seconds())
-                    continue
-
-                # Select axons to send challenge to
-                axons = self.node.select_axons()
-
-                # Send challenge to axons
-                results = await node.send_challenge_to_axons(axons=axons, prompt=challenge_data.prompt)
-
-                # Evaluate responses
-                if self.inference_validator and results:
-                    # Convert results to InferenceResponse objects
-                    inference_responses = []
-                    miner_ids = []
-                    for result in results:
-                        if result.get("success") and result.get("response"):
-                            # Extract response text from the response list
-                            response_text = result["response"][0] if isinstance(result["response"], list) else str(result["response"])
-                            inference_responses.append(InferenceResponse(
-                                response_text=response_text,
-                                response_time_ms=result.get("response_time_ms", 0),
-                            ))
-                            miner_ids.append(result.get("uid"))
-                    
-                    if inference_responses:
-                        consensus_score, heatmap_path, narrative, emissions = await self.inference_validator.evaluate_responses(
-                            challenge_id=challenge_data.id,
-                            prompt=challenge_data.prompt,
-                            responses=inference_responses,
-                            miner_ids=miner_ids
-                        )
-                        bt.logging.info(f"Evaluation complete: consensus_score={consensus_score}, emissions={emissions}")
-
-                # Log miner challenge results
-                for result in results:
-                    status = "success" if result.get("success") else "failed"
-                    self._log_miner_challenge_result_json(
-                        node_id=result.get("uid"),
-                        hotkey=result.get("hotkey"),
-                        status=status,
-                        score=None,  # Score to be calculated later
-                    )
-
-                await asyncio.sleep(config.challenge_interval.total_seconds())
-
-            except Exception as e:
-                bt.logging.error(f"Error in process: {str(e)}")
-                await asyncio.sleep(1)
+        """
+        Process challenges from queue (push mode only).
+        
+        Note: This method is deprecated. The validator now uses the main_loop() 
+        in validator/main.py which consumes challenges from the queue.
+        Challenges are received via Fiber-encrypted POST to /fiber/challenge endpoint.
+        """
+        bt.logging.warning(
+            "validator0.py process() method is deprecated. "
+            "Use validator/main.py main_loop() instead which supports Fiber-encrypted challenges."
+        )
+        bt.logging.info("Validator0 process() exiting - use main_loop() for push mode")
+        return
 
     
     def stop(self):

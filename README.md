@@ -27,19 +27,21 @@ loosh-inference-validator/
 
 ## Features
 
+- **Fiber MLTS (Multi-Layer Transport Security)** for encrypted challenge reception and callback transmission
+- **RSA-based key exchange** and symmetric key encryption (Fernet) for secure communication
 - Challenge generation and distribution
 - Response evaluation using consensus and similarity metrics
 - Heatmap visualization of response similarity
 - Emissions allocation based on response quality and speed
 - Database storage of challenges, responses, and evaluation results
-- Integration with Challenge API
+- Integration with Challenge API via Fiber-encrypted endpoints
 
 ## Requirements
 
 - Python 3.12+
 - uv (Python package installer) - [Installation instructions](https://github.com/astral-sh/uv)
 - uvicorn (ASGI web server) - Included in dependencies, used to run the FastAPI application
-- fiber (Bittensor network library) - Required for Bittensor network operations (installed manually due to dependency conflicts)
+- fiber (Bittensor network library) - Required for Bittensor network operations and MLTS security (automatically installed via pyproject.toml)
 - Bittensor wallet with sufficient stake
 - Access to Challenge API
 - OpenAI-compatible inference endpoint - Required for generating consensus narratives during evaluation. Can be:
@@ -68,25 +70,18 @@ pip install uv
 uv sync
 ```
 
-This will automatically create a virtual environment and install all dependencies from `pyproject.toml`.
+This will automatically create a virtual environment and install all dependencies from `pyproject.toml`, including Fiber MLTS.
 
-4. Install fiber (required dependency):
+**Note:** Fiber is automatically installed via `pyproject.toml` dependencies. If you need to install manually:
 ```bash
 # Activate the virtual environment first
 source .venv/bin/activate  # Linux/Mac
 # or
 .venv\Scripts\activate  # Windows
 
-# Install fiber from git repository
-uv pip install "git+https://github.com/rayonlabs/fiber.git@production#egg=fiber[chain]"
+# Install Fiber MLTS from git repository
+uv pip install "git+https://github.com/chutesai/fiber.git@a41ab890708757140a3cf4aae8e5af57a8b03159#egg=fiber[full]"
 ```
-
-Or using regular pip:
-```bash
-pip install "git+https://github.com/rayonlabs/fiber.git@production#egg=fiber[chain]"
-```
-
-**Note:** Fiber must be installed manually due to a dependency version conflict with bittensor:
 
 
 To activate the virtual environment:
@@ -240,12 +235,21 @@ docker run -d \
 
 ## API Endpoints
 
+### Standard Endpoints
 - `GET /availability` - Check validator availability
-- `POST /challenges` - Submit a challenge to the validator (push mode)
+- `POST /challenges` - Submit a challenge to the validator (legacy endpoint, deprecated in favor of Fiber)
 - `GET /challenges/stats` - Get challenge queue statistics
 - `POST /register` - Register with validator
 - `GET /stats` - Get validator statistics
 - `POST /set_running` - Set running status
+
+### Fiber MLTS Endpoints (Secure Communication)
+- `GET /fiber/public-key` - Get validator's RSA public key for key exchange
+- `POST /fiber/key-exchange` - Exchange symmetric key with Challenge API (for challenge channel)
+- `POST /fiber/challenge` - Receive encrypted challenge from Challenge API
+- `GET /fiber/stats` - Get Fiber server statistics
+
+**Note:** New integrations should use the Fiber-encrypted `/fiber/challenge` endpoint instead of the legacy `/challenges` endpoint.
 
 ## Inference Configuration
 
@@ -327,13 +331,34 @@ OPENAI_MODEL=gpt-4
 
 For custom endpoints, you can configure the LLM service programmatically as shown above.
 
-## Challenge Mode
+## Challenge Mode & Fiber MLTS Security
 
-The validator operates in **push mode** only. Challenges are pushed to the validator via the `POST /challenges` endpoint, where they are queued for processing. The validator does not pull challenges from the Challenge API.
+The validator operates in **push mode** only with **Fiber MLTS encryption**. Challenges are pushed to the validator via the Fiber-encrypted `POST /fiber/challenge` endpoint, where they are decrypted and queued for processing. The validator does not pull challenges from the Challenge API.
 
-### Submitting Challenges
+### Fiber MLTS Architecture
 
-Challenges can be submitted to the validator using the `/challenges` endpoint:
+The validator implements Fiber MLTS (Multi-Layer Transport Security) for secure communication:
+
+**Challenge Reception (Challenge API → Validator):**
+1. Challenge API performs handshake with validator (fetches public key, exchanges symmetric key)
+2. Challenges are encrypted with Fernet and sent to `/fiber/challenge`
+3. Validator decrypts challenges and adds them to the processing queue
+
+**Callback Transmission (Validator → Challenge API):**
+1. Validator performs handshake with Challenge API (reverse direction)
+2. Callbacks are encrypted with Fernet and sent to Challenge API's `/fiber/callback`
+3. Challenge API decrypts and processes the response
+
+**Security Features:**
+- RSA-based key exchange for initial handshake
+- Fernet symmetric encryption for payloads
+- Per-validator symmetric key isolation
+- Automatic key expiration and rotation
+- Header-based key lookup (`symmetric-key-uuid`, `hotkey-ss58-address`)
+
+### Submitting Challenges (Legacy - Deprecated)
+
+Challenges can be submitted to the validator using the legacy `/challenges` endpoint:
 
 ```bash
 curl -X POST http://localhost:8000/challenges \
@@ -347,6 +372,19 @@ curl -X POST http://localhost:8000/challenges \
   }'
 ```
 
+**Note:** This endpoint is deprecated. The Challenge API should use the Fiber-encrypted `/fiber/challenge` endpoint instead.
+
+### Fiber Configuration
+
+Configure Fiber settings in your `.env` file:
+
+```env
+# Fiber MLTS Configuration
+FIBER_KEY_TTL_SECONDS=3600          # Time-to-live for symmetric keys (1 hour)
+FIBER_HANDSHAKE_TIMEOUT_SECONDS=30  # Handshake timeout
+FIBER_ENABLE_KEY_ROTATION=true      # Enable automatic key rotation
+```
+
 See the [API Endpoints](#api-endpoints) section for more details.
 
 ## Evaluation Process
@@ -355,14 +393,16 @@ For a detailed explanation of the evaluation pipeline, see [EVALUATION_PROCESS.m
 
 High-level overview:
 
-1. Challenges are pushed to the validator via `POST /challenges` endpoint (push mode)
-2. Validator processes challenges from its internal queue
-3. Challenges are sent to selected miners
-4. Miners generate responses using their LLM backends
-5. Validator collects responses and calculates embeddings
-6. Consensus score and heatmap are generated using LLM inference (via `llm_service.py`)
-7. Emissions are allocated based on response quality and speed
-8. Results are stored in the database and sent to Challenge API
+1. Challenges are pushed to the validator via Fiber-encrypted `POST /fiber/challenge` endpoint
+2. Validator decrypts challenges and adds them to its internal queue
+3. Validator processes challenges from the queue
+4. Challenges are sent to selected miners
+5. Miners generate responses using their LLM backends
+6. Validator collects responses and calculates embeddings
+7. Consensus score and heatmap are generated using LLM inference (via `llm_service.py`)
+8. Emissions are allocated based on response quality and speed
+9. Results are encrypted and sent to Challenge API via Fiber-encrypted callback
+10. Results are also stored in the database
 
 The evaluation process includes:
 - **Embedding Generation**: Responses are converted to embeddings for similarity analysis

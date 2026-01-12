@@ -1,6 +1,6 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from validator.config import ValidatorConfig
@@ -24,10 +24,27 @@ def get_config_dependency():
 
 @router.get("")
 async def check_availability(
-    master_hotkey: str = Header(..., alias="master-hotkey"),
+    request: Request,
     config: ValidatorConfig = Depends(get_config_dependency)
 ) -> Dict[str, Any]:
-    """Check if the validator is available."""
+    """
+    Check if the validator is available.
+    
+    Accepts optional master-hotkey header for logging/authentication purposes.
+    """
+    # Extract master hotkey from headers (case-insensitive)
+    master_hotkey = None
+    for header_name, header_value in request.headers.items():
+        if header_name.lower() == "master-hotkey":
+            master_hotkey = header_value
+            break
+    
+    # Log if master hotkey is provided (for debugging)
+    if master_hotkey:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Availability check from master: {master_hotkey[:8]}...")
+    
     return AvailabilityResponse().model_dump()
 
 @router.get("/health")

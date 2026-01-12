@@ -79,12 +79,24 @@ class ConsensusEngine:
 
     def _apply_clustering_filter(self, sim_matrix: np.ndarray) -> np.ndarray:
         distance_matrix = 1 - sim_matrix
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=0.5,
-            affinity='precomputed',
-            linkage='average'
-        )
+        # In scikit-learn 1.2+, 'affinity' was replaced with 'metric'
+        # For precomputed distance matrices, use metric='precomputed'
+        try:
+            # Try new API (scikit-learn >= 1.2)
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.5,
+                metric='precomputed',
+                linkage='average'
+            )
+        except TypeError:
+            # Fallback to old API (scikit-learn < 1.2)
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0.5,
+                affinity='precomputed',
+                linkage='average'
+            )
         labels = clustering.fit_predict(distance_matrix)
         dominant_label = np.argmax(np.bincount(labels))
         mask = labels == dominant_label
@@ -137,20 +149,103 @@ class ConsensusEngine:
 
     def _generate_heatmap(self, sim_matrix: np.ndarray, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        plt.figure(figsize=(10, 8))
+        
+        # Adaptive figure size based on matrix dimensions (smaller matrices = smaller figures)
+        # Reduced base size to minimize file size while maintaining readability
+        # Base size: 5x4 (reduced from 6x5), scale up for larger matrices, but cap at 8x6.5
+        n = sim_matrix.shape[0]
+        base_size = 5.0  # Reduced from 6.0
+        scale_factor = min(1.0 + (n - 2) * 0.12, 1.6)  # Slightly reduced scaling
+        fig_width = min(base_size * scale_factor, 8.0)  # Reduced max from 10.0
+        fig_height = min(base_size * 0.8 * scale_factor, 6.5)  # Reduced max from 8.0, maintain aspect ratio
+        
+        plt.figure(figsize=(fig_width, fig_height))
+        
+        # Determine color scale bounds
+        # For similarity matrices, values are typically between 0 and 1
+        matrix_min = float(np.min(sim_matrix))
+        matrix_max = float(np.max(sim_matrix))
+        matrix_range = matrix_max - matrix_min
+        
+        # Set explicit color scale bounds to ensure colors are visible
+        # Always use 0.0 to 1.0 range for similarity scores to ensure consistent coloring
+        vmin = 0.0
+        vmax = 1.0
+        
+        # If all values are very similar or identical, still use full range for color visibility
+        # This ensures the heatmap shows colors even when responses are very similar
+        if matrix_range < 0.01:
+            # Values are nearly identical - use full 0-1 range to show color gradient
+            # The actual values will map to the appropriate part of the colormap
+            vmin = 0.0
+            vmax = 1.0
+        else:
+            # Use actual range with small padding for better visualization
+            vmin = max(0.0, matrix_min - 0.05)
+            vmax = min(1.0, matrix_max + 0.05)
+        
+        # Only show annotations for smaller matrices to reduce file size
+        # For larger matrices, annotations can significantly increase file size
+        show_annotations = n <= 5  # Only annotate if 5 or fewer responses
+        
         sns.heatmap(
             sim_matrix,
-            annot=True,
-            fmt=".2f",
+            annot=show_annotations,  # Conditional annotations
+            fmt=".2f" if show_annotations else None,
             cmap="coolwarm",
+            vmin=vmin,
+            vmax=vmax,
+            center=None,  # Don't center - use full range for better color variation
             xticklabels=self.labels,
-            yticklabels=self.labels
+            yticklabels=self.labels,
+            cbar_kws={"label": "Similarity Score"}  # Add colorbar label
         )
-        plt.title("Consensus Similarity Heatmap")
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        plt.savefig(path)
+        # Reduce font sizes to minimize file size
+        plt.title("Consensus Similarity Heatmap", fontsize=10)  # Reduced from default
+        plt.xticks(rotation=45, ha='right', fontsize=8)  # Smaller font
+        plt.yticks(fontsize=8)  # Smaller font
+        plt.tight_layout(pad=0.5)  # Reduced padding
+        
+        # Optimize file size: reduce DPI, compress PNG, and minimize whitespace
+        # DPI 75 is sufficient for most displays and significantly reduces file size
+        plt.savefig(
+            path,
+            dpi=75,  # Reduced from 100 to 75 (25% reduction in pixels = ~40% file size reduction)
+            bbox_inches='tight',
+            pad_inches=0.1,  # Minimize padding to reduce file size
+            facecolor='white',  # Ensure white background for better compression
+            format='png',  # Explicitly set PNG format
+            metadata={'Software': None}  # Remove metadata to reduce size
+        )
         plt.close()
+        
+        # Post-process with PIL for additional compression
+        try:
+            from PIL import Image
+            # Open the saved image
+            img = Image.open(path)
+            # Convert to RGB if RGBA (removes alpha channel if not needed)
+            if img.mode == 'RGBA':
+                # Check if alpha channel is actually used
+                alpha = img.split()[3]
+                if alpha.getextrema()[1] == 255:  # All pixels are opaque
+                    img = img.convert('RGB')
+            
+            # Save with optimized compression
+            # Use optimize=True and compress_level=9 for maximum compression
+            img.save(
+                path,
+                'PNG',
+                optimize=True,  # Enable optimization
+                compress_level=9  # Maximum compression (0-9, 9 is max)
+            )
+        except ImportError:
+            # PIL not available, skip post-processing
+            pass
+        except Exception as e:
+            # If compression fails, keep original
+            import logging
+            logging.getLogger(__name__).debug(f"Could not compress heatmap image: {e}")
 
     def _compute_individual_scores(
         self, 

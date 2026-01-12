@@ -78,6 +78,23 @@ class MinerScore(Base):
     
     miner = relationship("Miner")
 
+class SybilDetectionResult(Base):
+    """Table for storing sybil detection results."""
+    __tablename__ = "sybil_detection_results"
+
+    id = Column(Integer, primary_key=True)
+    challenge_id = Column(Integer, ForeignKey("inference_challenges.id"), nullable=True)
+    suspicious_pairs_count = Column(Integer, nullable=False, default=0)
+    suspicious_groups_count = Column(Integer, nullable=False, default=0)
+    suspicious_pairs = Column(JSON, nullable=True)  # Store pairs as JSON
+    suspicious_groups = Column(JSON, nullable=True)  # Store groups as JSON
+    analysis_report = Column(Text, nullable=True)
+    high_similarity_threshold = Column(Float, nullable=False)
+    very_high_similarity_threshold = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    challenge = relationship("InferenceChallenge")
+
 def init_db(db_path: str) -> None:
     """Initialize the database with the schema."""
     engine = create_engine(f"sqlite:///{db_path}")

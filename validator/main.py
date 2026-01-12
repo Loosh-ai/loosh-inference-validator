@@ -14,8 +14,9 @@ from validator.challenge.challenge_types import InferenceChallenge
 from validator.challenge.send_challenge import send_challenge
 
 from validator.miner_api.check_miner_availability import check_miner_availability, get_available_nodes
+from validator.miner_api.availability_worker import AvailabilityWorker
 
-from validator.challenge_api.get_next_challenge import get_next_challenge_with_retry, get_next_challenge_with_retry2
+# Pull-based challenge fetching removed - only push mode (Fiber) is supported
 from validator.challenge_api.update_challenge_response import process_challenge_results
 from validator.challenge_api.models import Challenge as ChallengeAPIRequest
 from validator.challenge_api.models import ChallengeResponse as ChallengeAPIResponse
@@ -23,10 +24,15 @@ from validator.endpoints.challenges import get_next_challenge as get_next_challe
 from validator.endpoints.challenges import ChallengeCreate
 
 from validator.db.operations import DatabaseManager
+from validator.evaluation.sybil_sync import SybilSyncTask
+from validator.validator_list_fetcher import ValidatorListFetcher
+from validator.evaluation.evaluation import InferenceValidator
 
 from fiber.chain.models import Node
 from fiber.validator.client import construct_server_address
 from fiber.chain.chain_utils import load_hotkey_keypair, load_coldkeypub_keypair
+from fiber.chain.fetch_nodes import get_nodes_for_netuid
+from fiber.chain.interface import get_substrate
 
 from pathlib import Path
 from datetime import timedelta
@@ -185,39 +191,22 @@ async def main_loop():
         logger.error(error_msg)
         return
 
-    nodes = []
-    nodes.append(Node(
-        node_id=1,
-        hotkey=hotkey.ss58_address,
-        coldkey=coldkey.ss58_address,
-        ip="127.0.0.1",
-        port=8081,
-        stake=100,
-        incentive=0.0,
-        netuid=config.netuid,
-        alpha_stake=0.0,
-        tao_stake=0.0,
-        trust=0.0,
-        vtrust=0.0,
-        ip_type=4,
-        last_updated=time.time()
-    ))
-    # nodes.append(Node(
-    #     node_id=2,
-    #     hotkey=hotkey.ss58_address,
-    #     coldkey=coldkey.ss58_address,
-    #     ip="127.0.0.1",
-    #     port=8082,
-    #     stake=100,
-    #     incentive=0.0,
-    #     netuid=21,
-    #     alpha_stake=0.0,
-    #     tao_stake=0.0,
-    #     trust=0.0,
-    #     vtrust=0.0,
-    #     ip_type=4,
-    #     last_updated=time.time()
-    # ))
+    # Query Fiber chain for registered nodes
+    logger.info(f"Querying Fiber chain for registered nodes (netuid={config.netuid}, network={config.subtensor_network})")
+    try:
+        substrate = get_substrate(subtensor_network=config.subtensor_network)
+        nodes = get_nodes_for_netuid(substrate=substrate, netuid=config.netuid)
+        logger.info(f"Found {len(nodes)} registered nodes on chain")
+        if len(nodes) == 0:
+            logger.warning(
+                f"No nodes found on chain for netuid={config.netuid}. "
+                "Miners need to register using: fiber-post-ip --netuid <NETUID> --subtensor.network <NETWORK> "
+                "--external_port <PORT> --wallet.name <WALLET> --wallet.hotkey <HOTKEY> --external_ip <IP>"
+            )
+    except Exception as e:
+        logger.error(f"Failed to query Fiber chain for nodes: {e}", exc_info=True)
+        logger.warning("Falling back to empty node list. Validator will not be able to find miners.")
+        nodes = []
 
     # Concurrency control
     max_concurrent = config.max_concurrent_challenges
@@ -243,149 +232,320 @@ async def main_loop():
         logger.error(error_msg)
         return
 
-    async with httpx.AsyncClient(timeout=config.challenge_timeout.total_seconds()) as client:
+    # Initialize availability worker (non-blocking background process)
+    availability_worker = AvailabilityWorker(
+        hotkey=hotkey.ss58_address,
+        max_concurrent=config.max_concurrent_availability_checks,
+        db_path=config.db_path,
+        check_interval=30.0,  # Check every 30 seconds
+        max_miners=config.max_miners
+    )
+    availability_worker.start()
+    
+    # Update worker with initial node list
+    availability_worker.update_nodes(nodes)
+    logger.info(f"Initialized availability worker with {len(nodes)} nodes")
+    
+    # Get initial available nodes (may be empty until first check completes)
+    available_nodes = availability_worker.get_available_nodes()
+    num_available = len(available_nodes)
+    logger.info(f"Initial available nodes: {num_available} (worker will update in background)")
+    
+    # Initialize inference validator for evaluation
+    inference_validator = None
+    if not test_mode:
+        try:
+            inference_validator = InferenceValidator(db_manager=db_manager)
+            logger.info("InferenceValidator initialized - evaluation and heatmap generation enabled")
+        except Exception as e:
+            logger.error(f"Failed to initialize InferenceValidator: {e}. Evaluation will be disabled.", exc_info=True)
+            inference_validator = None
+    else:
+        logger.info("[TEST MODE] InferenceValidator not initialized - evaluation disabled")
+    
+    # Initialize validator list fetcher (to filter out validators from miner list)
+    validator_list_fetcher = None
+    try:
+        validator_list_fetcher = ValidatorListFetcher(
+            challenge_api_url=config.challenge_api_url,
+            challenge_api_key=config.challenge_api_key,
+            refresh_interval_seconds=300.0  # Refresh every 5 minutes
+        )
+        await validator_list_fetcher.start()
+        logger.info("Validator list fetcher started (will periodically fetch validators from Challenge API)")
+    except Exception as e:
+        logger.warning(f"Failed to start validator list fetcher: {e}. Continuing without validator filtering.")
+        validator_list_fetcher = None
+    
+    # Initialize sybil sync task (background task to send records to Challenge API)
+    sybil_sync_task = None
+    try:
+        sybil_sync_task = SybilSyncTask(
+            db_manager=db_manager,
+            validator_hotkey_ss58=hotkey.ss58_address,
+            sync_interval_seconds=60.0,  # Sync every 60 seconds
+            batch_size=10  # Send up to 10 records per batch
+        )
+        await sybil_sync_task.start()
+        logger.info("Sybil sync task started (will periodically send records to Challenge API)")
+    except Exception as e:
+        logger.warning(f"Failed to start sybil sync task: {e}. Continuing without sybil sync.")
+        sybil_sync_task = None
+    
+    try:
+        # Create httpx client for challenge sending
+        pool_size = max(100, config.max_concurrent_availability_checks * 2)
+        async with httpx.AsyncClient(
+            timeout=config.challenge_timeout.total_seconds(),
+            limits=httpx.Limits(
+                max_connections=pool_size, 
+                max_keepalive_connections=pool_size // 2
+            )
+        ) as client:
 
-        async def get_available_nodes_cached() -> List[Node]:
-            """Get available nodes with error handling."""
-            try:
-                return await get_available_nodes(nodes, client, db_manager, hotkey.ss58_address)
-            except Exception as e:
-                logger.warning(f"Error checking miner availability: {str(e)}. Continuing anyway...")
-                return []
-        
-        # Initial check
-        available_nodes = await get_available_nodes_cached()
-        num_available = len(available_nodes)
-        logger.info(f"available_nodes {available_nodes} num_available {num_available}")
+            def get_available_nodes_cached() -> List[Node]:
+                """Get available nodes from worker (non-blocking, returns cached results)."""
+                return availability_worker.get_available_nodes()
 
-        async def process_challenge(challenge_data: ChallengeAPIResponse) -> None:
-            """
-            Process a single challenge and submit response when ready (completion order).
-            
-            This function processes challenges concurrently and submits responses
-            as soon as they're ready, not in arrival order.
-            """
-            async with challenge_semaphore:
-                try:
-                    default_model = config.default_model
-                    challenge_id = challenge_data.id
-                    prompt = challenge_data.prompt
-                    
-                    model = challenge_data.metadata.get("model", default_model) if challenge_data.metadata else "default_model"
-                    model = default_model
-                    
-                    max_tokens = challenge_data.max_tokens
-                    temperature = challenge_data.temperature
-                    top_p = challenge_data.top_p
-
-                    challenge_orig = ChallengeAPIRequest(
-                        id=challenge_data.id,
-                        correlation_id=getattr(challenge_data, 'correlation_id', None),
-                        prompt=challenge_data.prompt,
-                        temperature=challenge_data.temperature,
-                        top_p=challenge_data.top_p,
-                        max_tokens=challenge_data.max_tokens,
-                        metadata=challenge_data.metadata,
-                        created_at=challenge_data.created_at,
-                        status=challenge_data.status,
-                        requester=challenge_data.requester
-                    )
-
-                    # Refresh available nodes (in case they changed)
-                    current_available_nodes = await get_available_nodes_cached()
-                    if not current_available_nodes:
-                        logger.warning(f"No available nodes for challenge {challenge_id[:8]}..., skipping")
-                        return
-                    
-                    # Create new challenge tasks for available nodes
-                    new_challenge_tasks = []
-                    
-                    for node in current_available_nodes:
-                        # Create challenge
-                        challenge = InferenceChallenge(
-                            prompt=prompt,
-                            model=model,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            top_p=top_p,
-                            correlation_id=getattr(challenge_data, 'correlation_id', None)
-                        )
-                        
-                        # Send challenge to miner
+            async def process_challenge(challenge_data: ChallengeAPIResponse) -> None:
+                """
+                Process a single challenge and submit response when ready (completion order).
+                
+                This function processes challenges concurrently and submits responses
+                as soon as they're ready, not in arrival order.
+                """
+                from validator.timing import PipelineTiming, PipelineStages
+                
+                async with challenge_semaphore:
+                    try:
+                        # Load timing data from challenge metadata
+                        pipeline_timing = None
+                        correlation_id = getattr(challenge_data, 'correlation_id', None) or challenge_data.id
                         try:
-                            challenge_task = await send_challenge(
-                                client=client,
-                                server_address=construct_server_address(node),
-                                challenge_id=challenge_id,
-                                challenge_orig=challenge_orig,
-                                challenge=challenge,
-                                miner_hotkey=node.hotkey,
-                                db_manager=db_manager,
-                                node_id=node.node_id
+                            if challenge_data.metadata and 'timing_data' in challenge_data.metadata:
+                                timing_data = challenge_data.metadata.get('timing_data')
+                                if isinstance(timing_data, dict):
+                                    pipeline_timing = PipelineTiming.from_dict(timing_data)
+                        except Exception as e:
+                            logger.debug(f"Could not load timing data for {correlation_id}: {e}")
+                        
+                        if pipeline_timing:
+                            # Add validator receive stage
+                            pipeline_timing.add_stage(PipelineStages.VALIDATOR_RECEIVE)
+                        
+                        default_model = config.default_model
+                        challenge_id = challenge_data.id
+                        prompt = challenge_data.prompt
+                        
+                        model = challenge_data.metadata.get("model", default_model) if challenge_data.metadata else "default_model"
+                        model = default_model
+                        
+                        max_tokens = challenge_data.max_tokens
+                        temperature = challenge_data.temperature
+                        top_p = challenge_data.top_p
+
+                        challenge_orig = ChallengeAPIRequest(
+                            id=challenge_data.id,
+                            correlation_id=getattr(challenge_data, 'correlation_id', None),
+                            prompt=challenge_data.prompt,
+                            temperature=challenge_data.temperature,
+                            top_p=challenge_data.top_p,
+                            max_tokens=challenge_data.max_tokens,
+                            metadata=challenge_data.metadata,
+                            created_at=challenge_data.created_at,
+                            status=challenge_data.status,
+                            requester=challenge_data.requester
+                        )
+
+                        # Get available nodes from worker (non-blocking)
+                        current_available_nodes = get_available_nodes_cached()
+                        if not current_available_nodes:
+                            logger.warning(f"No available nodes for challenge {challenge_id[:8]}..., skipping")
+                            return
+                        
+                        # Filter out validators (including self)
+                        validator_hotkey = hotkey.ss58_address
+                        filtered_nodes = []
+                        filtered_count = 0
+                        
+                        for node in current_available_nodes:
+                            # Skip validator's own node
+                            if node.hotkey == validator_hotkey:
+                                filtered_count += 1
+                                continue
+                            
+                            # Skip if node is a known validator
+                            if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
+                                filtered_count += 1
+                                continue
+                            
+                            filtered_nodes.append(node)
+                        
+                        if not filtered_nodes:
+                            logger.warning(
+                                f"No available nodes (excluding {filtered_count} validator(s)) "
+                                f"for challenge {challenge_id[:8]}..., skipping"
+                            )
+                            return
+                        
+                        if filtered_count > 0:
+                            logger.debug(
+                                f"Filtered out {filtered_count} validator node(s) "
+                                f"(including self: {validator_hotkey[:8]}...) "
+                                f"from {len(current_available_nodes)} available nodes"
+                            )
+                        
+                        # Create new challenge tasks for available nodes
+                        new_challenge_tasks = []
+                        
+                        for node in filtered_nodes:
+                            # Convert IP from integer to dotted decimal if needed
+                            import socket
+                            ip_str = node.ip
+                            try:
+                                # Check if IP looks like an integer (numeric string) - convert to IP address
+                                ip_int = int(ip_str)
+                                if node.ip_type == 4:  # IPv4
+                                    ip_str = socket.inet_ntoa(ip_int.to_bytes(4, byteorder='big'))
+                                elif node.ip_type == 6:  # IPv6
+                                    ip_str = socket.inet_ntop(socket.AF_INET6, ip_int.to_bytes(16, byteorder='big'))
+                            except (ValueError, OverflowError):
+                                # IP is already a string, use as is
+                                pass
+                            except Exception as e:
+                                logger.warning(f"Error converting IP for node {node.node_id}: {e}")
+                            
+                            # Create node with converted IP for construct_server_address
+                            from fiber.chain.models import Node
+                            node_with_ip = Node(
+                                hotkey=node.hotkey, coldkey=node.coldkey, node_id=node.node_id,
+                                incentive=node.incentive, netuid=node.netuid, alpha_stake=node.alpha_stake,
+                                tao_stake=node.tao_stake, stake=node.stake, trust=node.trust,
+                                vtrust=node.vtrust, last_updated=node.last_updated,
+                                ip=ip_str, ip_type=node.ip_type, port=node.port, protocol=node.protocol
                             )
                             
-                            new_challenge_tasks.append(challenge_task)
-                            logger.info(f"Challenge sent successfully to node {node.node_id}")
+                            # Create challenge
+                            challenge = InferenceChallenge(
+                                prompt=prompt,
+                                model=model,
+                                max_tokens=max_tokens,
+                                temperature=temperature,
+                                top_p=top_p,
+                                correlation_id=getattr(challenge_data, 'correlation_id', None)
+                            )
+                            
+                            # Send challenge to miner
+                            try:
+                                # Track timing: validator send to miner
+                                if pipeline_timing:
+                                    validator_send_stage = pipeline_timing.add_stage(PipelineStages.VALIDATOR_SEND_TO_MINER)
                                 
-                        except Exception as e:
-                            logger.error(f"Error sending challenge to node {node.node_id}: {str(e)}")
-                    
-                    # Process challenge results (submits response when ready - completion order)
-                    await process_challenge_results(
-                        new_challenge_tasks,
-                        client,
-                        api_key=config.challenge_api_key,
-                        validator_hotkey=hotkey.ss58_address,
-                        server_address=config.challenge_api_url,
-                        node_id=0,
-                        test_mode=getattr(config, 'test_mode', False)
-                    )
-                    
-                    logger.info(f"Completed processing challenge {challenge_id[:8]}...")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing challenge: {str(e)}", exc_info=True)
-        
-        async def challenge_consumer_loop():
-            """Continuously consume challenges and process them concurrently."""
-            logger.info("Starting challenge consumer loop")
-            while True:
-                try:
-                    # Fetch next challenge based on mode (push or pull)
-                    challenge_data = None
-                    
-                    if config.challenge_mode == "push":
-                        # Use queue-based consumption
+                                challenge_task = await send_challenge(
+                                    client=client,
+                                    server_address=construct_server_address(node_with_ip, replace_with_localhost=True),
+                                    challenge_id=challenge_id,
+                                    challenge_orig=challenge_orig,
+                                    challenge=challenge,
+                                    miner_hotkey=node.hotkey,
+                                    db_manager=db_manager,
+                                    node_id=node.node_id,
+                                    config=config,
+                                    validator_hotkey_ss58=hotkey.ss58_address,
+                                    pipeline_timing=pipeline_timing
+                                )
+                                
+                                if pipeline_timing and validator_send_stage:
+                                    validator_send_stage.finish()
+                                
+                                new_challenge_tasks.append(challenge_task)
+                                logger.info(f"Challenge sent successfully to node {node.node_id}")
+                                    
+                            except Exception as e:
+                                logger.error(f"Error sending challenge to node {node.node_id}: {str(e)}")
+                        
+                        # Process challenge results (submits response when ready - completion order)
+                        await process_challenge_results(
+                            new_challenge_tasks,
+                            client,
+                            api_key=config.challenge_api_key,
+                            validator_hotkey=hotkey.ss58_address,
+                            server_address=config.challenge_api_url,
+                            node_id=0,
+                            test_mode=getattr(config, 'test_mode', False),
+                            validator=inference_validator,
+                            challenge_prompt=prompt,
+                            challenge_id=challenge_id,
+                            pipeline_timing=pipeline_timing
+                        )
+                        
+                        logger.info(f"Completed processing challenge {challenge_id[:8]}...")
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing challenge: {str(e)}", exc_info=True)
+            
+            async def challenge_consumer_loop():
+                """Continuously consume challenges from queue and process them concurrently."""
+                logger.info("Starting challenge consumer loop (push mode only - Fiber encrypted challenges)")
+                
+                # Track active challenge processing tasks
+                active_tasks = set()
+                
+                while True:
+                    try:
+                        # Only use queue-based consumption (push mode)
+                        # Challenges are received via Fiber-encrypted POST to /fiber/challenge endpoint
                         challenge_from_queue = await get_next_challenge_from_queue(timeout=1.0)
+                        
                         if challenge_from_queue:
                             # Convert ChallengeCreate to ChallengeAPIResponse format
                             challenge_data = convert_challenge_create_to_api_response(challenge_from_queue)
-                    else:
-                        # Use pull mechanism (existing code)
-                        challenge_data = await get_next_challenge_with_retry2(config, hotkey)
-                        if challenge_data:
-                            # Sleep briefly to avoid tight polling loop
-                            await asyncio.sleep(0.1)
-                    
-                    if challenge_data:
-                        # Process in background (don't await - allows concurrent processing)
-                        asyncio.create_task(process_challenge(challenge_data))
-                        logger.debug(f"Started processing challenge {challenge_data.id[:8]}... (concurrent)")
-                    else:
-                        # No challenge available, sleep briefly
+                            
+                            # Process in background (don't await - allows concurrent processing)
+                            task = asyncio.create_task(process_challenge(challenge_data))
+                            active_tasks.add(task)
+                            
+                            # Remove task from set when it completes
+                            task.add_done_callback(active_tasks.discard)
+                            
+                            logger.debug(f"Started processing challenge {challenge_data.id[:8]}... (concurrent, active: {len(active_tasks)})")
+                        else:
+                            # No challenge available, but check if there are still active tasks
+                            if active_tasks:
+                                logger.debug(f"No new challenges, but {len(active_tasks)} challenge(s) still processing...")
+                            # Sleep briefly before checking again
+                            await asyncio.sleep(1.0)
+                            
+                    except KeyboardInterrupt:
+                        # Wait for active tasks to complete before exiting
+                        if active_tasks:
+                            logger.info(f"Waiting for {len(active_tasks)} active challenge(s) to complete...")
+                            await asyncio.gather(*active_tasks, return_exceptions=True)
+                        break
+                    except Exception as e:
+                        logger.error(f"Error in challenge consumer loop: {str(e)}")
                         await asyncio.sleep(1.0)
-                        
-                except KeyboardInterrupt:
-                    break
-                except Exception as e:
-                    logger.error(f"Error in challenge consumer loop: {str(e)}")
-                    await asyncio.sleep(1.0)
-        
-        try:
+            
             # Start challenge consumer loop
             await challenge_consumer_loop()
-        finally:
-            pass
+    finally:
+        # Clean up background tasks
+        logger.info("Shutting down availability worker...")
+        availability_worker.stop()
+        
+        if validator_list_fetcher:
+            logger.info("Shutting down validator list fetcher...")
+            try:
+                await validator_list_fetcher.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping validator list fetcher: {e}")
+        
+        if sybil_sync_task:
+            logger.info("Shutting down sybil sync task...")
+            try:
+                await sybil_sync_task.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping sybil sync task: {e}")
 
 def run_main_loop():
     try:

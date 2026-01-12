@@ -57,9 +57,10 @@ ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
 # Sync base dependencies with uv
 RUN uv sync
 
-# Install fiber package from git repository into the venv
+# Install Fiber (MLTS networking library) from git repository into the venv
 # Install AFTER uv sync to ensure it's in the venv and not overwritten
-RUN uv pip install -p $VENV_NAME "git+https://github.com/rayonlabs/fiber.git@production#egg=fiber[chain]"
+# Using chutesai/fiber for MLTS (Multi-Layer Transport Security) support
+RUN uv pip install -p $VENV_NAME "git+https://github.com/chutesai/fiber.git@a41ab890708757140a3cf4aae8e5af57a8b03159#egg=fiber[full]"
 
 # Install btcli (Bittensor CLI) for wallet management
 RUN uv pip install -p $VENV_NAME --system bittensor && \

@@ -26,3 +26,4 @@ def get_optimal_device(device: Optional[str] = None) -> str:
     
     return "cpu"
 
+
