@@ -253,7 +253,7 @@ docker run -d \
 
 ## Inference Configuration
 
-The validator uses LLM inference for generating consensus narratives during the evaluation process. The validator provides flexible options for configuring inference endpoints and models.
+The validator uses LLM inference for generating consensus narratives during the evaluation process. The validator provides flexible options for configuring inference endpoints and models. The inference doesn't need to be particularly sophisticated. It just needs to summarize some content. You can use inference as a service or run locally. See min_compute for model recommendation for running inference locally. The inference endpoint needs to support openai format. VLLM, ollama, and llama.cpp support this.
 
 ### LLM Service
 
