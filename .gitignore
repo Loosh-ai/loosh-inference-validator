@@ -13,3 +13,6 @@ docker/wallets
 *.tar
 .env
 temp/
+*.db-journal
+*.db-shm
+*.db-wal
