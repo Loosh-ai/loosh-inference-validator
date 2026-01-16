@@ -94,6 +94,12 @@ class ValidatorConfig(BaseSettings):
     default_temperature: float = Field(default=0.7, description="Default temperature")
     default_top_p: float = Field(default=0.95, description="Default top-p value")
     
+    # Sentence Transformer configuration (for embeddings)
+    sentence_transformer_model: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        description="Sentence Transformer model for generating embeddings during evaluation"
+    )
+    
     # Evaluation configuration
     heatmap_upload_url: str = Field(
         default="http://localhost:8080/upload",

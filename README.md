@@ -101,6 +101,15 @@ cp env.example .env
 
 Then edit `.env` and update the values according to your setup. See `env.example` for all available configuration options with descriptions.
 
+**IMPORTANT:** For production deployments, keep inference disabled to avoid resource overhead:
+
+```bash
+# Set in your .env file:
+ENABLE_NARRATIVE_GENERATION=false
+```
+
+The validator does NOT need to run inference for evaluation. Narrative generation is an optional feature that uses LLM inference to create summaries. Keeping this disabled significantly reduces resource requirements and operational costs.
+
 **Note:** Fiber only supports wallets in `~/.bittensor/wallets`. Custom wallet paths are not supported.
 
 ## Running
@@ -253,9 +262,30 @@ docker run -d \
 
 ## Inference Configuration
 
-The validator uses LLM inference for generating consensus narratives during the evaluation process. The validator provides flexible options for configuring inference endpoints and models. The inference doesn't need to be particularly sophisticated. It just needs to summarize some content. You can use inference as a service or run locally. See min_compute for model recommendation for running inference locally. The inference endpoint needs to support openai format. VLLM, ollama, and llama.cpp support this.
+**IMPORTANT: Inference is NOT required for validator operation.**
 
-### LLM Service
+The validator uses LLM inference ONLY for generating optional consensus narratives during the evaluation process. **For production deployments, this should be disabled to reduce resource requirements.**
+
+```bash
+# Set in your .env file to disable inference:
+ENABLE_NARRATIVE_GENERATION=false
+```
+
+The validator will function normally without inference - it will still:
+- Evaluate miner responses
+- Calculate consensus scores
+- Generate heatmaps
+- Allocate emissions
+
+The only difference is that narrative summaries will not be generated (which are optional and primarily for debugging/analysis).
+
+---
+
+### Optional: Enabling Inference for Development/Analysis
+
+If you want to enable narrative generation for development or analysis purposes, the validator provides flexible options for configuring inference endpoints and models. The inference doesn't need to be particularly sophisticated - it just needs to summarize content.
+
+#### LLM Service
 
 The validator uses `llm_service.py` (`validator/evaluation/Recording/llm_service.py`) to manage LLM inference. This service supports multiple providers and allows you to configure different endpoints for inference:
 

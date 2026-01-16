@@ -3,6 +3,7 @@ version: "1.0.0"
 compute_spec:
   validator:
     cpu:
+      # Embedding + cosine similarity + small-matrix ops are light; plotting/IO can dominate at high QPS.
       min_cores: 4
       min_speed: 2.5
       recommended_cores: 8
@@ -10,65 +11,67 @@ compute_spec:
       architecture: "x86_64"
 
     gpu:
+      # For high-volume / low-latency embeddings, a GPU is strongly recommended.
       required: True
 
-      # Minimum: can run the validator narrative step, but may need tighter ctx / concurrency caps.
-      min_vram: 24
-      min_compute_capability: 8.6
-      minimum_gpu: "NVIDIA A10 24GB"
+      # Minimum viable for high-volume embeddings (small sentence-transformers models)
+      min_vram: 16
+      min_compute_capability: 7.5
+      minimum_gpu: "NVIDIA T4 16GB (or better)"
 
-      # Recommended: minimal latency at high volume (continuous batching + high concurrency).
-      recommended_vram: 80
-      recommended_compute_capability: 9.0
-      recommended_gpu: "NVIDIA H100 80GB"
+      # Recommended sweet spot for sustained high throughput + batching headroom
+      recommended_vram: 24
+      recommended_compute_capability: 8.6
+      recommended_gpu: "NVIDIA A10 24GB"
 
-      # Performance reference (H100 PCIe; NVIDIA datasheet)
-      # * TF32/BF16/FP16/FP8/INT8 numbers are "with sparsity" per datasheet.
-      fp64: 26
-      fp64_tensor_core: 51
-      fp32: 51
-      tf32: 756
-      bfloat16_tensor_core: 1513
-      int8_tensor_core: 3026
+      # Premium tier for extreme throughput / large batches / multiple embedding models per process
+      premium_vram: 80
+      premium_compute_capability: 9.0
+      premium_gpu: "NVIDIA H100 80GB"
 
-      # See NVIDIA H100 datasheet for details:
-      # https://www.nvidia.com/content/dam/en-zz/Solutions/gtcs22/data-center/h100/PB-11133-001_v01.pdf
-      # (perf table source used here is NVIDIA H100 Tensor Core GPU datasheet)
+      notes:
+        - "For best throughput, batch embeddings across requests (micro-batching)."
+        - "Load the SentenceTransformer model once per process (singleton) to avoid per-request load overhead."
+        - "Cosine similarity on 3–5 responses is negligible; PNG generation + disk IO can be the bottleneck."
 
-    # LLM recommendations for this validator workload:
-    # - validator receives 3-5 candidate responses and generates an ~800-token narrative
-    # - prioritize fast decode, stable instruction following, good summarization
-    llm:
-      primary:
-        gpu: "NVIDIA H100 80GB"
-        dtype: "bf16"
-        model: "Qwen/Qwen2.5-14B-Instruct"
-        huggingface: "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct"
+    embeddings:
+      # Sentence-transformers embedding workload (no generative inference)
+      framework: "sentence-transformers"
+      recommended_models:
+        - name: "sentence-transformers/all-MiniLM-L6-v2"
+          use_case: "fast general-purpose embeddings"
+        - name: "sentence-transformers/all-mpnet-base-v2"
+          use_case: "higher quality embeddings (more compute)"
+      precision:
+        # FP16/BF16 are typical on GPU for embeddings; keep FP32 if you need exact reproducibility.
+        recommended: "fp16"
+      batching:
+        # Guidance for high volume; tune based on latency SLOs and text length.
+        recommended_microbatch_window_ms: 10
+        recommended_batch_size_range: [32, 256]
+      evaluation:
+        methods:
+          - "cosine_similarity"
+          - "tf-idf (optional)"
         notes:
-          - "Run BF16 on vLLM/TGI for best latency/throughput."
-          - "Recommend enabling continuous batching + prefix caching."
-
-      minimum:
-        gpu: "NVIDIA A10 24GB"
-        quant: "awq-int4"
-        model: "Qwen/Qwen2.5-7B-Instruct-AWQ"
-        huggingface: "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ"
-        notes:
-          - "Very strong small model; easy high-throughput deployment."
-          - "Good fallback tier for cost-sensitive operators."
+          - "Similarity matrix for N=3–5 is tiny; compute cost is dominated by embedding forward pass and plotting/IO."
 
     memory:
-      min_ram: 32
+      # GPU embeddings benefit from RAM for queues/batching and for model + tokenizer caches.
+      min_ram: 16
       min_swap: 4
       recommended_swap: 8
-      ram_type: "DDR6"
+      ram_type: "DDR5"
 
     storage:
-      min_space: 1000
-      recommended_space: 1000
+      # Embedding validators don't need massive disk unless you store lots of plots/artifacts.
+      min_space: 200
+      recommended_space: 500
       type: "SSD"
       min_iops: 1000
       recommended_iops: 5000
+      notes:
+        - "If saving heatmaps per request at high QPS, prefer local NVMe and consider sampling or async writes."
 
     os:
       name: "Ubuntu"

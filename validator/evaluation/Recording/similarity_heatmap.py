@@ -7,8 +7,20 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
 import os
 
-# Load sentence embedding model
-_model = SentenceTransformer('all-MiniLM-L6-v2')
+# Default model for backward compatibility
+_default_model_name = 'sentence-transformers/all-MiniLM-L6-v2'
+_model = None
+
+def _get_model(model_name: str = None) -> SentenceTransformer:
+    """Get or create sentence transformer model instance."""
+    global _model
+    model_to_use = model_name or _default_model_name
+    
+    # Only reuse cached model if it matches the requested model
+    if _model is None or (hasattr(_model, 'model_name_or_path') and _model.model_name_or_path != model_to_use):
+        _model = SentenceTransformer(model_to_use)
+    
+    return _model
 
 def generate_similarity_heatmap(responses: list[str], save_path: str = "./similarity_heatmap.png") -> None:
     """
@@ -57,7 +69,7 @@ if __name__ == "__main__":
 def generate_semantic_similarity_heatmap(
     responses: list[str],
     save_path: str = "./semantic_similarity_heatmap.png",
-    model_name: str = "all-MiniLM-L6-v2"
+    model_name: str = None
 ) -> None:
     """
     Generates a semantic similarity heatmap using sentence embeddings and saves it as an image.
@@ -65,12 +77,15 @@ def generate_semantic_similarity_heatmap(
     Args:
         responses (list[str]): List of text responses.
         save_path (str): Path to save the heatmap image.
-        model_name (str): Name of the sentence-transformers model to use.
+        model_name (str): Name of the sentence-transformers model to use. 
+                         Defaults to 'sentence-transformers/all-MiniLM-L6-v2' if not provided.
     """
     
+    # Get model instance
+    model = _get_model(model_name)
 
     # Compute sentence embeddings
-    embeddings = _model.encode(responses, convert_to_numpy=True)
+    embeddings = model.encode(responses, convert_to_numpy=True)
 
     # Compute cosine similarity matrix
     similarity_matrix = cosine_similarity(embeddings)

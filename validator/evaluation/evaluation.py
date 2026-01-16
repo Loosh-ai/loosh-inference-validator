@@ -25,10 +25,13 @@ class InferenceValidator:
     def __init__(self, db_manager: DatabaseManager):
         """Initialize validator."""
         self.db_manager = db_manager
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         
         # Load configuration
         self.config = get_validator_config()
+        
+        # Initialize embedding model from config
+        self.embedding_model = SentenceTransformer(self.config.sentence_transformer_model)
+        logger.info(f"Loaded sentence transformer model: {self.config.sentence_transformer_model}")
         
         # Initialize narrative generator with LLM config (only if enabled)
         # Get API key from config or environment
