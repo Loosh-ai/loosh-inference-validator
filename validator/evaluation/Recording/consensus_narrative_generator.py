@@ -7,9 +7,14 @@ from .llm_service import LLMService, LLMConfig as LLMServiceConfig
 
 @dataclass
 class LLMConfig:
-    """Legacy config for backward compatibility - use LLMServiceConfig instead."""
-    api_url: str
-    model_name: str
+    """Legacy config for backward compatibility - use LLMServiceConfig instead.
+    
+    IMPORTANT: The api_url must implement the OpenAI Chat Completions API format
+    (see https://platform.openai.com/docs/api-reference/chat/create).
+    The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
+    """
+    api_url: str  # Must implement OpenAI Chat Completions API format
+    model_name: str  # Can be any model (Llama, Qwen, Mistral, etc.)
     temperature: float = 0.7
     max_tokens: int = 800
     api_key: Optional[str] = None
@@ -166,7 +171,9 @@ Please write a concise but insightful narrative summary.
         # Ensure LLM service is initialized
         llm_service = await self._ensure_llm_service()
         
-        # Prepare messages in OpenAI-compatible format (must be OpenAI API format, but does not need to be an OpenAI model)
+        # Prepare messages in OpenAI Chat Completions API format
+        # (see https://platform.openai.com/docs/api-reference/chat/create)
+        # The API must implement this format, but the underlying model does NOT need to be an OpenAI model.
         messages = [
             {"role": "system", "content": "You are a helpful assistant that writes analytical summaries."},
             {"role": "user", "content": prompt}

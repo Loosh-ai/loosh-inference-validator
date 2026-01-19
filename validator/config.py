@@ -117,17 +117,19 @@ class ValidatorConfig(BaseSettings):
     )
     
     # LLM configuration for evaluation (narrative generation)
-    # Note: The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
-    # Examples: OpenAI API, Azure OpenAI, Ollama, vLLM, or any OpenAI-compatible endpoint
+    # IMPORTANT: The API endpoint must implement the OpenAI Chat Completions API format
+    # (see https://platform.openai.com/docs/api-reference/chat/create)
+    # The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
+    # You can use any model (Llama, Qwen, Mistral, etc.) as long as the API follows OpenAI's format.
     llm_api_url: str = Field(
         default="https://api.openai.com/v1/chat/completions",
-        description="LLM API URL (must be OpenAI-compatible, but does not need to be an OpenAI model)"
+        description="LLM API URL - must implement OpenAI Chat Completions API format (https://platform.openai.com/docs/api-reference/chat/create). The model itself does not need to be from OpenAI."
     )
     llm_api_key: Optional[str] = Field(
         default=None,
         description="LLM API key for evaluation (if not provided, will try to use environment variable LLM_API_KEY)"
     )
-    llm_model: str = Field(default="gpt-4", description="LLM model to use (must be OpenAI-compatible)")
+    llm_model: str = Field(default="", description="LLM model name to use. Can be any model as long as the API endpoint implements OpenAI Chat Completions format.")
     
     # Logging configuration
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(

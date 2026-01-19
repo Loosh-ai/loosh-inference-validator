@@ -34,6 +34,9 @@ class InferenceValidator:
         logger.info(f"Loaded sentence transformer model: {self.config.sentence_transformer_model}")
         
         # Initialize narrative generator with LLM config (only if enabled)
+        # IMPORTANT: The API endpoint must implement OpenAI Chat Completions API format
+        # (see https://platform.openai.com/docs/api-reference/chat/create)
+        # The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
         # Get API key from config or environment
         self.narrative_generator = None
         if self.config.enable_narrative_generation:
@@ -41,8 +44,8 @@ class InferenceValidator:
             
             self.narrative_generator = ConsensusNarrativeGenerator(
                 LLMConfig(
-                    api_url=self.config.llm_api_url,
-                    model_name=self.config.llm_model,
+                    api_url=self.config.llm_api_url,  # Must implement OpenAI Chat Completions API format
+                    model_name=self.config.llm_model,  # Can be any model (Llama, Qwen, Mistral, etc.)
                     temperature=0.7,
                     max_tokens=800,
                     api_key=api_key

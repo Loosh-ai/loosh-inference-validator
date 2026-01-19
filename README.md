@@ -44,12 +44,16 @@ loosh-inference-validator/
 - fiber (Bittensor network library) - Required for Bittensor network operations and MLTS security (automatically installed via pyproject.toml)
 - Bittensor wallet with sufficient stake
 - Access to Challenge API
-- LLM inference endpoint (OpenAI-compatible) - Required for generating consensus narratives during evaluation. The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model. Can be:
-  - OpenAI API (default)
+- LLM inference endpoint (OpenAI Chat Completions API compatible) - Required for generating consensus narratives during evaluation. 
+  
+  **IMPORTANT**: The API endpoint must implement the [OpenAI Chat Completions API format](https://platform.openai.com/docs/api-reference/chat/create). The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model. You can use any model (Llama, Qwen, Mistral, etc.) as long as the API follows OpenAI's format.
+  
+  Compatible endpoints include:
+  - OpenAI API (https://api.openai.com/v1/chat/completions)
   - Azure OpenAI
-  - Ollama (local or remote)
-  - vLLM or other OpenAI-compatible endpoints
-  - Any OpenAI-compatible API endpoint
+  - vLLM (self-hosted)
+  - Ollama (with OpenAI compatibility mode)
+  - Any endpoint implementing the OpenAI Chat Completions API format
 
 ## Installation
 
@@ -286,17 +290,19 @@ The only difference is that narrative summaries will not be generated (which are
 
 If you want to enable narrative generation for development or analysis purposes, the validator provides flexible options for configuring inference endpoints and models. The inference doesn't need to be particularly sophisticated - it just needs to summarize content.
 
+**IMPORTANT**: The API endpoint must implement the [OpenAI Chat Completions API format](https://platform.openai.com/docs/api-reference/chat/create). The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model. You can use any model (Llama, Qwen, Mistral, etc.) as long as the API follows OpenAI's format.
+
 #### LLM Service
 
 The validator uses `llm_service.py` (`validator/evaluation/Recording/llm_service.py`) to manage LLM inference. This service supports multiple providers and allows you to configure different endpoints for inference:
 
-- **OpenAI** (`provider="openai"`): Standard OpenAI API endpoints (including custom endpoints) - Note: The endpoint must be OpenAI-compatible but does not need to be an OpenAI model
-- **Azure OpenAI** (`provider="azure_openai"`): Azure-hosted OpenAI models - Note: The endpoint must be OpenAI-compatible but does not need to be an OpenAI model
-- **Ollama**: Local or remote Ollama instances
+- **OpenAI** (`provider="openai"`): Standard OpenAI API endpoints (including custom endpoints that implement OpenAI Chat Completions format)
+- **Azure OpenAI** (`provider="azure_openai"`): Azure-hosted endpoints implementing OpenAI Chat Completions format
+- **Ollama**: Local or remote Ollama instances (with OpenAI compatibility mode)
 
 ### Configuring Inference Endpoints
 
-The LLM service allows you to configure custom API endpoints through the `LLMConfig` class:
+The LLM service allows you to configure custom API endpoints through the `LLMConfig` class. The endpoint must implement the [OpenAI Chat Completions API format](https://platform.openai.com/docs/api-reference/chat/create):
 
 ```python
 from validator.evaluation.Recording.llm_service import LLMService, LLMConfig
@@ -306,13 +312,15 @@ llm_service = LLMService()
 await llm_service.initialize()
 
 # Register an LLM with a custom endpoint
+# The endpoint must implement OpenAI Chat Completions API format
+# but can serve any model (Llama, Qwen, Mistral, etc.)
 llm_service.register_llm(
     name="my-llm",
     llm_config=LLMConfig(
-        provider="openai",
-        model="gpt-4",
+        provider="vllm",
+        model="your-model-name",
         api_key="your-api-key",
-        api_base="https://your-custom-endpoint.com/v1",  # Custom endpoint (must be OpenAI-compatible)
+        api_base="https://your-custom-endpoint.com/v1",  # Must implement OpenAI Chat Completions format
         temperature=0.7,
         max_tokens=800
     )
@@ -321,17 +329,21 @@ llm_service.register_llm(
 
 ### Supported Providers
 
+All providers require endpoints that implement the [OpenAI Chat Completions API format](https://platform.openai.com/docs/api-reference/chat/create). The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
+
 - **OpenAI** (`provider="openai"`): Uses `langchain-openai` package
-  - Supports custom `api_base` for self-hosted or proxy endpoints (must be OpenAI-compatible, but does not need to be an OpenAI model)
+  - Supports custom `api_base` for self-hosted or proxy endpoints
+  - Endpoint must implement OpenAI Chat Completions API format (can serve any model)
   - Requires `langchain-openai` package
 
 - **Azure OpenAI** (`provider="azure_openai"`): Uses `langchain-openai` package
   - Configure via `api_base` (Azure endpoint) and `provider_specific_params`
-  - The endpoint must be OpenAI-compatible but does not need to be an OpenAI model
+  - Endpoint must implement OpenAI Chat Completions API format (can serve any model)
   - Requires `langchain-openai` package
 
 - **Ollama** (`provider="ollama"`): Uses `langchain-ollama` package
   - Supports local (`http://localhost:11434`) or remote Ollama instances
+  - Must use Ollama's OpenAI compatibility mode
   - Requires `langchain-ollama` package
 
 ### Local Inference Setup
@@ -356,10 +368,13 @@ Inference configuration can be set via environment variables in your `.env` file
 
 ```env
 # LLM Configuration (for evaluation)
-# Note: The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
-LLM_API_URL=https://api.openai.com/v1/chat/completions
+# IMPORTANT: The API endpoint must implement the OpenAI Chat Completions API format
+# (see https://platform.openai.com/docs/api-reference/chat/create)
+# The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
+# You can use any model (Llama, Qwen, Mistral, etc.) as long as the API follows OpenAI's format.
+LLM_API_URL=https://your.inference.endpoint/v1/chat/completions
 LLM_API_KEY=your-api-key
-LLM_MODEL=gpt-4
+LLM_MODEL=your-model-name
 ```
 
 For custom endpoints, you can configure the LLM service programmatically as shown above.

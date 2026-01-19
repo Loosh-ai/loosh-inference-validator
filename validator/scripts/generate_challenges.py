@@ -57,7 +57,7 @@ async def post_challenge(options: Dict[str, Any], api_key: str, url: str = "http
         
         model = options.get("model")
         if model is None:
-            models = ["gpt-4o-mini", "gpt-3.5-turbo", "claude-3-haiku", "llama-3-8b"]
+            models = ["claude-3-haiku", "llama-3-8b"]
             model = random.choice(models)
         
         # Create challenge payload
@@ -101,7 +101,7 @@ async def example_usage():
     """Example usage of the post_challenge function."""
     # Example with specific options
     options_specific = {
-        "model": "gpt-4o-mini",
+        "model": "microsoft/Phi3-512", #this is just an example, you can use any model so long as the api is OpenAI-compatible
         "temperature": 0.7,
         "top_p": 0.95,
         "max_tokens": 128
@@ -162,7 +162,7 @@ if __name__ == "__main__":
 #     "temperature": 0.7,
 #     "top_p": 0.95,
 #     "max_tokens": 128,
-#     "metadata": {"model": "gpt-4o-mini"}
+#     "metadata": {"model": "microsoft/Phi3-512"}
 #   }'|jq
 # {
 #   "id": "c-002",
@@ -171,7 +171,7 @@ if __name__ == "__main__":
 #   "top_p": 0.95,
 #   "max_tokens": 128,
 #   "metadata": {
-#     "model": "gpt-4o-mini"
+#     "model": "microsoft/Phi3-512"
 #   },
 #   "created_at": "2025-10-03T21:23:58.057959",
 #   "status": "available",

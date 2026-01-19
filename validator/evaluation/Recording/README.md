@@ -11,12 +11,15 @@ Automated narrative generation from consensus evaluation results using LLM integ
 Visualization tools for consensus similarity analysis and heatmap generation.
 
 ## 🔧 Consensus Narrative Generator
+Attention! The narrative generator is not currently being used. ensure ENABLE_NARRATIVE_GENERATION=false is set in your .env file.
 
 Transforms consensus evaluation results into human-readable analytical narratives using configurable LLM backends.
 
+**IMPORTANT**: The API endpoint must implement the [OpenAI Chat Completions API format](https://platform.openai.com/docs/api-reference/chat/create). The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model. You can use any model (Llama, Qwen, Mistral, etc.) as long as the API follows OpenAI's format.
+
 ### Features
 
-- **Multi-LLM Support**: Compatible with various LLM APIs (OpenAI, local models, etc.)
+- **Multi-LLM Support**: Compatible with various LLM APIs that implement OpenAI Chat Completions format
 - **Rich Context Integration**: Incorporates all consensus metrics and visualizations
 - **Quality Assessment**: Includes response length variance and filtering analysis
 - **Structured Narratives**: Produces consistent, insightful analytical summaries
@@ -30,9 +33,12 @@ from Recording.consensus_narrative_generator import (
 )
 
 # Configure LLM backend
+# The api_url must implement OpenAI Chat Completions API format
+# (see https://platform.openai.com/docs/api-reference/chat/create)
+# The model can be any model (Llama, Qwen, Mistral, etc.)
 llm_config = LLMConfig(
-    api_url="https://api.openai.com/v1/chat/completions",
-    model_name="gpt-4",
+    api_url="https://your.inference.endpoint/v1/chat/completions",  # Must implement OpenAI Chat Completions format
+    model_name="your-model-name",  # Can be any model
     temperature=0.7,
     max_tokens=800
 )
@@ -61,11 +67,12 @@ class LLMConfig:
 **Supported Configurations:**
 
 ```python
-# OpenAI GPT-4 (or any OpenAI-compatible endpoint)
-# Note: The endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
+# Any endpoint implementing OpenAI Chat Completions API format
+# (see https://platform.openai.com/docs/api-reference/chat/create)
+# The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
 llm_config = LLMConfig(
-    api_url="https://api.openai.com/v1/chat/completions",
-    model_name="gpt-4",
+    api_url="https://your-inference-endpoint/v1/chat/completions",  # Must implement OpenAI Chat Completions format
+    model_name="your-model-name",  # Can be any model (Llama, Qwen, Mistral, etc.)
     temperature=0.7,
     max_tokens=800
 )
