@@ -116,16 +116,18 @@ class ValidatorConfig(BaseSettings):
         description="API key for authenticating challenge push requests (optional)"
     )
     
-    # OpenAI configuration for evaluation
-    openai_api_url: str = Field(
+    # LLM configuration for evaluation (narrative generation)
+    # Note: The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
+    # Examples: OpenAI API, Azure OpenAI, Ollama, vLLM, or any OpenAI-compatible endpoint
+    llm_api_url: str = Field(
         default="https://api.openai.com/v1/chat/completions",
-        description="OpenAI API URL"
+        description="LLM API URL (must be OpenAI-compatible, but does not need to be an OpenAI model)"
     )
-    openai_api_key: Optional[str] = Field(
+    llm_api_key: Optional[str] = Field(
         default=None,
-        description="OpenAI API key for evaluation (if not provided, will try to use environment variable OPENAI_API_KEY)"
+        description="LLM API key for evaluation (if not provided, will try to use environment variable LLM_API_KEY)"
     )
-    openai_model: str = Field(default="gpt-4", description="OpenAI model to use")
+    llm_model: str = Field(default="gpt-4", description="LLM model to use (must be OpenAI-compatible)")
     
     # Logging configuration
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(

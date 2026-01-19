@@ -44,10 +44,11 @@ loosh-inference-validator/
 - fiber (Bittensor network library) - Required for Bittensor network operations and MLTS security (automatically installed via pyproject.toml)
 - Bittensor wallet with sufficient stake
 - Access to Challenge API
-- OpenAI-compatible inference endpoint - Required for generating consensus narratives during evaluation. Can be:
+- LLM inference endpoint (OpenAI-compatible) - Required for generating consensus narratives during evaluation. The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model. Can be:
   - OpenAI API (default)
   - Azure OpenAI
   - Ollama (local or remote)
+  - vLLM or other OpenAI-compatible endpoints
   - Any OpenAI-compatible API endpoint
 
 ## Installation
@@ -289,8 +290,8 @@ If you want to enable narrative generation for development or analysis purposes,
 
 The validator uses `llm_service.py` (`validator/evaluation/Recording/llm_service.py`) to manage LLM inference. This service supports multiple providers and allows you to configure different endpoints for inference:
 
-- **OpenAI**: Standard OpenAI API endpoints (including custom endpoints)
-- **Azure OpenAI**: Azure-hosted OpenAI models
+- **OpenAI** (`provider="openai"`): Standard OpenAI API endpoints (including custom endpoints) - Note: The endpoint must be OpenAI-compatible but does not need to be an OpenAI model
+- **Azure OpenAI** (`provider="azure_openai"`): Azure-hosted OpenAI models - Note: The endpoint must be OpenAI-compatible but does not need to be an OpenAI model
 - **Ollama**: Local or remote Ollama instances
 
 ### Configuring Inference Endpoints
@@ -306,12 +307,12 @@ await llm_service.initialize()
 
 # Register an LLM with a custom endpoint
 llm_service.register_llm(
-    name="my-openai",
+    name="my-llm",
     llm_config=LLMConfig(
         provider="openai",
         model="gpt-4",
         api_key="your-api-key",
-        api_base="https://your-custom-endpoint.com/v1",  # Custom endpoint
+        api_base="https://your-custom-endpoint.com/v1",  # Custom endpoint (must be OpenAI-compatible)
         temperature=0.7,
         max_tokens=800
     )
@@ -321,11 +322,12 @@ llm_service.register_llm(
 ### Supported Providers
 
 - **OpenAI** (`provider="openai"`): Uses `langchain-openai` package
-  - Supports custom `api_base` for self-hosted or proxy endpoints
+  - Supports custom `api_base` for self-hosted or proxy endpoints (must be OpenAI-compatible, but does not need to be an OpenAI model)
   - Requires `langchain-openai` package
 
 - **Azure OpenAI** (`provider="azure_openai"`): Uses `langchain-openai` package
   - Configure via `api_base` (Azure endpoint) and `provider_specific_params`
+  - The endpoint must be OpenAI-compatible but does not need to be an OpenAI model
   - Requires `langchain-openai` package
 
 - **Ollama** (`provider="ollama"`): Uses `langchain-ollama` package
@@ -353,10 +355,11 @@ The `min_compute.yml` file provides detailed specifications for:
 Inference configuration can be set via environment variables in your `.env` file:
 
 ```env
-# OpenAI Configuration (for evaluation)
-OPENAI_API_URL=https://api.openai.com/v1/chat/completions
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=gpt-4
+# LLM Configuration (for evaluation)
+# Note: The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
+LLM_API_URL=https://api.openai.com/v1/chat/completions
+LLM_API_KEY=your-api-key
+LLM_MODEL=gpt-4
 ```
 
 For custom endpoints, you can configure the LLM service programmatically as shown above.

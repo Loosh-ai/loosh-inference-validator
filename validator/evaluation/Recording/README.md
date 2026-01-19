@@ -61,8 +61,9 @@ class LLMConfig:
 **Supported Configurations:**
 
 ```python
-# OpenAI GPT-4
-openai_config = LLMConfig(
+# OpenAI GPT-4 (or any OpenAI-compatible endpoint)
+# Note: The endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
+llm_config = LLMConfig(
     api_url="https://api.openai.com/v1/chat/completions",
     model_name="gpt-4",
     temperature=0.7,

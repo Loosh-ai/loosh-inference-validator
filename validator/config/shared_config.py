@@ -137,14 +137,19 @@ class ChallengeAPIConfig(BaseConfig):
     challenge_api_url: str = Field(default="http://localhost:8080", description="Challenge API URL")
 
 
-class OpenAIConfig(BaseConfig):
-    """OpenAI configuration for evaluation."""
+class LLMServiceConfig(BaseConfig):
+    """LLM service configuration for evaluation (narrative generation).
     
-    openai_api_url: str = Field(
+    Note: The inference endpoint must be OpenAI-compatible (OpenAI API format), 
+    but does not need to be an OpenAI model. Examples: OpenAI API, Azure OpenAI, 
+    Ollama, vLLM, or any OpenAI-compatible endpoint.
+    """
+    
+    llm_api_url: str = Field(
         default="https://api.openai.com/v1/chat/completions",
-        description="OpenAI API URL"
+        description="LLM API URL (must be OpenAI-compatible, but does not need to be an OpenAI model)"
     )
-    openai_model: str = Field(default="gpt-4", description="OpenAI model to use")
+    llm_model: str = Field(default="gpt-4", description="LLM model to use (must be OpenAI-compatible)")
 
 
 class ValidatorConfig(BaseConfig):
@@ -157,7 +162,7 @@ class ValidatorConfig(BaseConfig):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     validator: ValidatorSpecificConfig = Field(default_factory=ValidatorSpecificConfig)
     challenge_api: ChallengeAPIConfig = Field(default_factory=ChallengeAPIConfig)
-    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    llm_service: LLMServiceConfig = Field(default_factory=LLMServiceConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 

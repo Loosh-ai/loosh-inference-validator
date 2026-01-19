@@ -37,12 +37,12 @@ class InferenceValidator:
         # Get API key from config or environment
         self.narrative_generator = None
         if self.config.enable_narrative_generation:
-            api_key = getattr(self.config, 'openai_api_key', None) or os.getenv("OPENAI_API_KEY")
+            api_key = getattr(self.config, 'llm_api_key', None) or os.getenv("LLM_API_KEY")
             
             self.narrative_generator = ConsensusNarrativeGenerator(
                 LLMConfig(
-                    api_url=self.config.openai_api_url,
-                    model_name=self.config.openai_model,
+                    api_url=self.config.llm_api_url,
+                    model_name=self.config.llm_model,
                     temperature=0.7,
                     max_tokens=800,
                     api_key=api_key

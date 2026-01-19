@@ -1,6 +1,7 @@
 # ---------- base stage ----------
 # Note: The validator does NOT run local inference (vllm, llamacpp, etc.)
-# It only uses HTTP API endpoints (OpenAI, Azure OpenAI, Ollama API)
+# It only uses HTTP API endpoints that are OpenAI-compatible (OpenAI API, Azure OpenAI, Ollama API, vLLM, etc.)
+# The inference endpoint must be OpenAI-compatible (OpenAI API format), but does not need to be an OpenAI model
 # If you want local inference, run Ollama/vLLM separately and point the validator to it via API endpoints
 
 # Use BUILD_ENV=dev for ubuntu:24.04, 

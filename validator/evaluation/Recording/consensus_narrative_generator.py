@@ -73,7 +73,7 @@ class ConsensusNarrativeGenerator:
                     api_base = None
             
             # Get API key from config or environment
-            api_key = self.llm_config.api_key or os.getenv("OPENAI_API_KEY")
+            api_key = self.llm_config.api_key or os.getenv("LLM_API_KEY")
             
             # Create LLM service config
             service_config = LLMServiceConfig(
@@ -166,7 +166,7 @@ Please write a concise but insightful narrative summary.
         # Ensure LLM service is initialized
         llm_service = await self._ensure_llm_service()
         
-        # Prepare messages in OpenAI format
+        # Prepare messages in OpenAI-compatible format (must be OpenAI API format, but does not need to be an OpenAI model)
         messages = [
             {"role": "system", "content": "You are a helpful assistant that writes analytical summaries."},
             {"role": "user", "content": prompt}
