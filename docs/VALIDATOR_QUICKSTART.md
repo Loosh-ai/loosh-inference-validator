@@ -2,12 +2,12 @@
 
 Complete guide for setting up and running a validator on the Loosh Inference Subnet with deployment options for local, PM2, Docker, and RunPod configurations.
 
-> **🔒 VALIDATOR ALLOWLIST REQUIRED**  
-> **IMPORTANT:** Validators must be added to our allowlist before they can participate in the network. To become an approved validator, please contact us:
+> **🔒 VALIDATOR REGISTRATION**  
+> **IMPORTANT:** We're currently onboarding validators and need to coordinate setup to ensure network stability. Please contact us to get started:
 > - **Discord**: [Join our Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
 > - **Email**: hello@loosh.ai
 > 
-> We review validator applications to ensure network quality and security. Please include your hotkey address and a brief description of your setup when contacting us.
+> We'll help you get configured and connected to the Challenge API. This is a temporary onboarding process as we scale up the network.
 
 ## Table of Contents
 
@@ -179,7 +179,7 @@ btcli wallet overview \
 - Registration is a one-time fee (check current cost with `btcli subnet list`)
 - After registration, you'll receive a UID on the subnet
 - Wait a few minutes after registration for the network to sync
-- **You must be added to the validator allowlist** - contact hello@loosh.ai
+- **Contact us for validator onboarding** - we'll help you connect to the Challenge API (hello@loosh.ai)
 
 #### Step 4: Post Your IP Address
 
@@ -250,7 +250,7 @@ See `env.example` for all available configuration options.
 ✅ **Active network** - Receive actual challenges from the testnet Challenge API  
 ✅ **Quick feedback** - Challenges arrive within a few minutes (depending on volume)  
 ✅ **Debug issues** - Identify and fix problems before mainnet  
-✅ **Allowlist testing** - Test your validator configuration before applying for mainnet allowlist  
+✅ **Coordinate setup** - Work with us to ensure proper configuration before mainnet  
 
 ### Testnet Setup Guide
 
@@ -322,7 +322,7 @@ You should receive challenges within 1-10 minutes. Check your logs:
 # "Evaluation complete, submitting response batch"
 ```
 
-Once your validator is working correctly on testnet, you can apply for mainnet allowlist access.
+Once your validator is working correctly on testnet, contact us to coordinate your mainnet deployment.
 
 ## Deployment Options
 
@@ -848,9 +848,9 @@ btcli wallet overview \
      --external_ip <YOUR-PUBLIC-IP>
    ```
 
-2. **Not on allowlist:**
-   - Contact hello@loosh.ai or via Discord to be added to the allowlist
-   - Include your hotkey address
+2. **Need validator onboarding:**
+   - Contact hello@loosh.ai or via Discord for help getting connected to the Challenge API
+   - Include your hotkey address and any setup questions
 
 3. **Firewall blocking port 8000:**
    ```bash
@@ -1037,10 +1037,10 @@ Once your validator is running successfully:
    - Join Discord for announcements
    - Update validator software regularly
 
-4. **Apply for Mainnet (When Ready):**
+4. **Deploy to Mainnet (When Ready):**
    - Test thoroughly on testnet first
-   - Contact hello@loosh.ai to request mainnet allowlist access
-   - Include your hotkey address and setup description
-   - Wait for approval before deploying to mainnet
+   - Contact hello@loosh.ai to coordinate mainnet deployment
+   - We'll help ensure your setup is configured correctly
+   - Provide your hotkey address and any questions about your setup
 
 Happy validating! 🎯
