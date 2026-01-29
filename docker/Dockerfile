@@ -7,13 +7,13 @@
 # If you want local inference, run Ollama/vLLM separately and point the validator to it via API endpoints
 
 # Use BUILD_ENV=dev for ubuntu:24.04, 
-# BUILD_ENV=cuda for nvidia/cuda docker
+# BUILD_ENV=cuda for nvidia/cuda docker (Ubuntu 24.04 with CUDA 13.1.1)
 # BUILD_ENV=runpod for runpod
 
 ARG BUILD_ENV=dev
 
 FROM ubuntu:24.04 AS base-dev
-FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04 AS base-cuda
+FROM nvidia/cuda:12.5.1-base-ubuntu24.04 AS base-cuda
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404 AS base-runpod
 
 FROM base-${BUILD_ENV} AS base
@@ -21,9 +21,11 @@ FROM base-${BUILD_ENV} AS base
 WORKDIR /app
 
 # Install system dependencies and Python 3.12
+# All base images (Ubuntu 24.04) have Python 3.12 available directly
 RUN apt-get update && apt-get install -y \
     python3.12 \
     python3.12-venv \
+    python3.12-dev \
     python3-pip \
     telnet \
     vim \
@@ -122,5 +124,16 @@ EXPOSE 8000
 # Run the validator using uvicorn
 # The validator runs as a FastAPI application
 # API_HOST and API_PORT can be set via environment variables (defaults to 0.0.0.0:8000)
-# Using validator_server.py's main block which reads from config
-CMD ["uv", "run", "python", "-m", "validator.validator_server"]
+# WALLET_PATH can be set to persistent storage location (defaults to /workspace/.bittensor/wallets for RunPod)
+# Source .env from /workspace (RunPod) or local .env, use string reference to avoid __main__ module issue
+CMD ["bash", "-c", "\
+    source /workspace/.env 2>/dev/null || source .env 2>/dev/null || true; \
+    WALLET_SOURCE=${WALLET_PATH:-/workspace/.bittensor/wallets}; \
+    if [ -d \"$WALLET_SOURCE\" ] && [ \"$(ls -A $WALLET_SOURCE 2>/dev/null)\" ]; then \
+        echo \"Copying wallets from $WALLET_SOURCE to /root/.bittensor/wallets\"; \
+        mkdir -p /root/.bittensor/wallets; \
+        cp -r $WALLET_SOURCE/* /root/.bittensor/wallets/; \
+    else \
+        echo \"No wallets found in $WALLET_SOURCE\"; \
+    fi; \
+    exec uv run uvicorn validator.validator_server:app --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000}"]

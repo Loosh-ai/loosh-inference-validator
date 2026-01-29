@@ -202,6 +202,22 @@ class MinerFiberClient:
             }
             
             response = await client.post(challenge_url, content=encrypted_payload, headers=headers, timeout=5*60.0)
+            
+            # Handle 401 (key invalid on miner side) with retry
+            if response.status_code == 401:
+                logger.warning(f"Miner {miner_endpoint} rejected key (401) - clearing cache and retrying handshake")
+                if miner_endpoint in self._symmetric_key_cache:
+                    del self._symmetric_key_cache[miner_endpoint]
+                if await self._perform_handshake(miner_endpoint, client):
+                    # Retry once with fresh key
+                    fernet_instance, symmetric_key_uuid, _ = self._symmetric_key_cache[miner_endpoint]
+                    encrypted_payload = fernet_instance.encrypt(json_payload)
+                    headers["x-fiber-symmetric-key-uuid"] = symmetric_key_uuid
+                    response = await client.post(challenge_url, content=encrypted_payload, headers=headers, timeout=5*60.0)
+                else:
+                    logger.error(f"Failed to re-establish handshake with miner {miner_endpoint} after 401")
+                    return None
+            
             response.raise_for_status()
             
             if response.status_code != 200:

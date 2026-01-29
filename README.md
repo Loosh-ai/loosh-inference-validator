@@ -96,6 +96,68 @@ source .venv/bin/activate  # Linux/Mac
 .venv\Scripts\activate  # Windows
 ```
 
+## Subnet Registration
+
+Before running the validator, you must register it on the Bittensor subnet. This is a two-step process:
+
+### Step 1: Register with btcli
+
+First, register your validator on the subnet using `btcli`:
+
+```bash
+btcli subnet register \
+  --netuid <NETUID> \
+  --subtensor.network <NETWORK> \
+  --wallet.name <WALLET_NAME> \
+  --wallet.hotkey <HOTKEY_NAME>
+```
+
+**Example:**
+```bash
+btcli subnet register \
+  --netuid 78 \
+  --subtensor.network finney \
+  --wallet.name validator \
+  --wallet.hotkey validator
+```
+
+**Note:** 
+- Replace `<NETUID>` with your subnet UID (e.g., 78)
+- Replace `<NETWORK>` with the network name (e.g., `finney`, `test`, `local`)
+- Replace `<WALLET_NAME>` and `<HOTKEY_NAME>` with your wallet configuration
+- This command requires sufficient TAO balance to cover the registration cost
+
+### Step 2: Post IP with Fiber
+
+After registering, post your validator's IP address using Fiber's `fiber-post-ip` command:
+
+```bash
+fiber-post-ip \
+  --netuid <NETUID> \
+  --subtensor.network <NETWORK> \
+  --external_port <YOUR-PORT> \
+  --wallet.name <WALLET_NAME> \
+  --wallet.hotkey <HOTKEY_NAME> \
+  --external_ip <YOUR-IP>
+```
+
+**Example:**
+```bash
+fiber-post-ip \
+  --netuid 78 \
+  --subtensor.network finney \
+  --external_port 8000 \
+  --wallet.name validator \
+  --wallet.hotkey validator \
+  --external_ip 1.2.3.4
+```
+
+**Note:** 
+- Replace `<YOUR-PORT>` with the port your validator API will run on (e.g., 8000)
+- Replace `<YOUR-IP>` with your validator's public IP address
+- The wallet must be located in `~/.bittensor/wallets` (Fiber requirement)
+- You may need to run this command periodically to keep your validator's IP address updated on the subnet
+
 ## Configuration
 
 Create a `.env` file in the project root by copying the example file:

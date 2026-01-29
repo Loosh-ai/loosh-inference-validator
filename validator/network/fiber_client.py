@@ -283,6 +283,43 @@ class ValidatorFiberClient:
                     f"(challenge_id: {response_data.get('id', 'unknown')[:8]}...)"
                 )
                 return True
+            elif response.status_code == 401:
+                # Key invalid/expired on Challenge API side - clear cache and retry once
+                logger.warning(
+                    f"Challenge API rejected key (401) - clearing cache and retrying handshake"
+                )
+                if challenge_api_endpoint in self._key_cache:
+                    del self._key_cache[challenge_api_endpoint]
+                
+                # Retry with fresh handshake
+                handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
+                if not handshake_result:
+                    logger.error(f"Failed to re-establish handshake with Challenge API after 401")
+                    return False
+                
+                fernet, key_uuid = handshake_result
+                encrypted_payload = fernet.encrypt(response_json)
+                headers["symmetric-key-uuid"] = key_uuid
+                
+                retry_response = await client.post(
+                    url,
+                    content=encrypted_payload,
+                    headers=headers,
+                    timeout=30.0
+                )
+                
+                if retry_response.status_code in (200, 201):
+                    logger.info(
+                        f"Encrypted callback sent successfully after re-handshake "
+                        f"(challenge_id: {response_data.get('id', 'unknown')[:8]}...)"
+                    )
+                    return True
+                else:
+                    logger.error(
+                        f"Failed to send encrypted callback after re-handshake: "
+                        f"{retry_response.status_code} - {retry_response.text}"
+                    )
+                    return False
             else:
                 logger.error(
                     f"Failed to send encrypted callback to Challenge API: "
@@ -292,7 +329,7 @@ class ValidatorFiberClient:
                 
         except Exception as e:
             logger.error(f"Error sending encrypted callback: {e}", exc_info=True)
-            # If handshake failed, clear cache to force re-handshake next time
+            # Clear cache to force re-handshake next time
             if challenge_api_endpoint in self._key_cache:
                 del self._key_cache[challenge_api_endpoint]
             return False
@@ -311,6 +348,202 @@ class ValidatorFiberClient:
         else:
             self._key_cache.clear()
             logger.debug("Cleared all key caches")
+    
+    async def send_encrypted_response_batch(
+        self,
+        challenge_api_endpoint: str,
+        batch_data: Dict,
+        client: httpx.AsyncClient
+    ) -> bool:
+        """
+        Send encrypted response batch to Challenge API.
+        
+        Args:
+            challenge_api_endpoint: Base URL of Challenge API
+            batch_data: Response batch data dictionary (will be JSON-encoded and encrypted)
+            client: HTTP client for making requests
+        
+        Returns:
+            True if batch sent successfully, False otherwise
+        """
+        try:
+            # Ensure handshake exists
+            handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
+            if not handshake_result:
+                logger.error(f"Failed to establish handshake with Challenge API {challenge_api_endpoint}")
+                return False
+            
+            fernet, key_uuid = handshake_result
+            
+            # Encode batch data as JSON
+            batch_json = json.dumps(batch_data).encode('utf-8')
+            
+            # Encrypt with Fernet
+            encrypted_payload = fernet.encrypt(batch_json)
+            
+            # Send encrypted batch
+            url = f"{challenge_api_endpoint.rstrip('/')}/fiber/response/batch"
+            headers = {
+                "symmetric-key-uuid": key_uuid,
+                "hotkey-ss58-address": self.validator_hotkey_ss58,
+                "Content-Type": "application/octet-stream"
+            }
+            
+            response = await client.post(
+                url,
+                content=encrypted_payload,
+                headers=headers,
+                timeout=30.0
+            )
+            
+            if response.status_code in (200, 201):
+                logger.info(
+                    f"Encrypted response batch sent successfully to Challenge API "
+                    f"(challenge_id: {batch_data.get('challenge_id', 'unknown')[:8]}...)"
+                )
+                return True
+            elif response.status_code == 409:
+                logger.warning(
+                    f"Responses already exist for challenge {batch_data.get('challenge_id', 'unknown')} - "
+                    f"batch submission rejected (409 Conflict)"
+                )
+                return False
+            elif response.status_code == 401:
+                # Key invalid/expired on Challenge API side - clear cache and retry once
+                logger.warning(
+                    f"Challenge API rejected key (401) - clearing cache and retrying handshake"
+                )
+                if challenge_api_endpoint in self._key_cache:
+                    del self._key_cache[challenge_api_endpoint]
+                
+                # Retry with fresh handshake
+                handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
+                if not handshake_result:
+                    logger.error(f"Failed to re-establish handshake with Challenge API after 401")
+                    return False
+                
+                fernet, key_uuid = handshake_result
+                encrypted_payload = fernet.encrypt(batch_json)
+                headers["symmetric-key-uuid"] = key_uuid
+                
+                retry_response = await client.post(
+                    url,
+                    content=encrypted_payload,
+                    headers=headers,
+                    timeout=30.0
+                )
+                
+                if retry_response.status_code in (200, 201):
+                    logger.info(
+                        f"Encrypted response batch sent successfully after re-handshake "
+                        f"(challenge_id: {batch_data.get('challenge_id', 'unknown')[:8]}...)"
+                    )
+                    return True
+                else:
+                    logger.error(
+                        f"Failed to send encrypted response batch after re-handshake: "
+                        f"{retry_response.status_code} - {retry_response.text}"
+                    )
+                    return False
+            else:
+                logger.error(
+                    f"Failed to send encrypted response batch to Challenge API: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending encrypted response batch: {e}", exc_info=True)
+            # If handshake failed, clear cache to force re-handshake next time
+            if challenge_api_endpoint in self._key_cache:
+                del self._key_cache[challenge_api_endpoint]
+            return False
+    
+    async def send_encrypted_upload(
+        self,
+        challenge_api_endpoint: str,
+        file_data: bytes,
+        filename: str,
+        challenge_id: str,
+        file_type: str,
+        content_type: str,
+        client: httpx.AsyncClient
+    ) -> Optional[str]:
+        """
+        Send encrypted file upload (heatmap/quality plot) to Challenge API.
+        
+        Args:
+            challenge_api_endpoint: Base URL of Challenge API
+            file_data: Raw file bytes
+            filename: Original filename
+            challenge_id: Challenge ID (UUID) for this upload
+            file_type: Type of file - "heatmap" or "quality_plot"
+            content_type: MIME content type (e.g., "image/png")
+            client: HTTP client for making requests
+        
+        Returns:
+            Filename if upload successful, None otherwise
+        """
+        try:
+            # Ensure handshake exists
+            handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
+            if not handshake_result:
+                logger.error(f"Failed to establish handshake with Challenge API {challenge_api_endpoint}")
+                return None
+            
+            fernet, key_uuid = handshake_result
+            
+            # Create upload payload as JSON with base64-encoded file data
+            upload_payload = {
+                "challenge_id": challenge_id,
+                "file_type": file_type,
+                "filename": filename,
+                "content_type": content_type,
+                "data": base64.b64encode(file_data).decode('utf-8')
+            }
+            
+            # Encode as JSON
+            upload_json = json.dumps(upload_payload).encode('utf-8')
+            
+            # Encrypt with Fernet
+            encrypted_payload = fernet.encrypt(upload_json)
+            
+            # Send encrypted upload
+            url = f"{challenge_api_endpoint.rstrip('/')}/fiber/heatmap/upload"
+            headers = {
+                "symmetric-key-uuid": key_uuid,
+                "hotkey-ss58-address": self.validator_hotkey_ss58,
+                "Content-Type": "application/octet-stream"
+            }
+            
+            response = await client.post(
+                url,
+                content=encrypted_payload,
+                headers=headers,
+                timeout=60.0  # Longer timeout for file uploads
+            )
+            
+            if response.status_code in (200, 201):
+                result = response.json()
+                stored_filename = result.get("filename", filename)
+                logger.info(
+                    f"Encrypted {file_type} upload successful for challenge {challenge_id[:8]}...: "
+                    f"{stored_filename}"
+                )
+                return stored_filename
+            else:
+                logger.error(
+                    f"Failed to send encrypted {file_type} upload to Challenge API: "
+                    f"{response.status_code} - {response.text}"
+                )
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error sending encrypted {file_type} upload: {e}", exc_info=True)
+            # If handshake failed, clear cache to force re-handshake next time
+            if challenge_api_endpoint in self._key_cache:
+                del self._key_cache[challenge_api_endpoint]
+            return None
     
     def get_stats(self) -> Dict:
         """Get client statistics."""

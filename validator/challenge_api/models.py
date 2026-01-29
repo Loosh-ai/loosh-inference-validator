@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional, Dict, Any
-from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+from pydantic import BaseModel, Field
 
 # API MODELS [
 # TODO: Common models repo or import from loosh_api
@@ -10,7 +10,11 @@ class Challenge(BaseModel):
     """Schema for a challenge with creation timestamp."""
     id: str
     correlation_id: Optional[str] = None
-    prompt: str
+    prompt: Optional[str] = None
+    model: Optional[str] = None
+    messages: Optional[List[Dict[str, Any]]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -24,14 +28,14 @@ class ChallengeResponse(Challenge):
     response_time_ms: int
 
 class ResponseCreate(BaseModel):
-    """Schema for creating a response to a challenge."""
+    """Schema for creating a response to a challenge (legacy 1:1)."""
     id: str
     text: str
     original_request: Challenge
 
 
 class Response(BaseModel):
-    """Schema for a response with creation timestamp."""
+    """Schema for a response with creation timestamp (legacy 1:1)."""
     id: str
     text: str
     original_request: Challenge
@@ -40,6 +44,48 @@ class Response(BaseModel):
 class ResponseResult(Response):
     """Schema for a challenge response with timing information."""
     response_time_ms: int
+
+
+# =============================================================================
+# New Batch Response Models (F3 - 1:N Response Storage)
+# =============================================================================
+
+class TokenUsage(BaseModel):
+    """Token usage statistics for cost attribution."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class MinerResponseData(BaseModel):
+    """Data for a single miner response in a batch."""
+    miner_id: str = Field(..., description="Miner hotkey or unique identifier")
+    miner_uid: Optional[int] = Field(None, description="Miner UID on subnet")
+    text: str = Field(..., description="Response text content")
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Tool calls")
+    finish_reason: str = Field("stop", description="Finish reason")
+    response_time_ms: int = Field(..., description="Response time in ms")
+    usage: TokenUsage = Field(..., description="Token usage (REQUIRED)")
+
+
+class EvaluationResult(BaseModel):
+    """Evaluation results computed by validator."""
+    consensus_score: float = Field(..., description="Consensus score")
+    emissions: Dict[str, float] = Field(..., description="Emission scores per miner_id")
+    best_miner_id: str = Field(..., description="Miner ID of the best response")
+    heatmap_path: Optional[str] = Field(None, description="Path to uploaded heatmap")
+    narrative: Optional[str] = Field(None, description="Consensus narrative")
+    sybil_detection: Optional[Dict[str, Any]] = Field(None, description="Sybil detection results")
+
+
+class ResponseBatchSubmit(BaseModel):
+    """Full batch submission to Challenge API."""
+    challenge_id: str = Field(..., description="Challenge UUID")
+    responses: List[MinerResponseData] = Field(..., description="All miner responses")
+    evaluation: EvaluationResult = Field(..., description="Evaluation results")
+    validator_hotkey: str = Field(..., description="Validator's hotkey")
+    original_request: Optional[Challenge] = Field(None, description="Original challenge")
+
 
 # Alias models
 # TODO: review alias names

@@ -16,7 +16,7 @@ class BaseConfig(BaseSettings):
     """Base configuration class with common settings."""
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=("/workspace/.env", ".env"),  # Check RunPod location first, then local
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"
@@ -113,6 +113,12 @@ class ValidatorSpecificConfig(BaseConfig):
     @property
     def weights_interval(self) -> timedelta:
         return timedelta(seconds=self.weights_interval_seconds)
+    
+    # Metagraph refresh interval (in seconds) - how often to refresh node list from chain
+    metagraph_refresh_interval_seconds: int = Field(
+        default=300, 
+        description="Metagraph refresh interval (seconds) - how often to fetch new node registrations from chain"
+    )
     
     # Test mode configuration
     test_mode: bool = Field(
