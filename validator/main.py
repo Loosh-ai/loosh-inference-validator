@@ -295,6 +295,38 @@ async def main_loop():
         logger.warning(f"Failed to start sybil sync task: {e}. Continuing without sybil sync.")
         sybil_sync_task = None
     
+    # Background task to periodically refresh metagraph (pick up new node registrations)
+    metagraph_refresh_task = None
+    metagraph_refresh_interval = float(config.metagraph_refresh_interval_seconds)
+    
+    async def refresh_metagraph_loop():
+        """Periodically refresh the metagraph to pick up new node registrations."""
+        while True:
+            try:
+                await asyncio.sleep(metagraph_refresh_interval)
+                logger.info(f"Refreshing metagraph (netuid={config.netuid}, network={config.subtensor_network})")
+                
+                try:
+                    refresh_substrate = get_substrate(subtensor_network=config.subtensor_network)
+                    refreshed_nodes = get_nodes_for_netuid(substrate=refresh_substrate, netuid=config.netuid)
+                    
+                    # Update availability worker with new node list
+                    availability_worker.update_nodes(refreshed_nodes)
+                    logger.info(f"Metagraph refreshed: {len(refreshed_nodes)} nodes (availability worker updated)")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to refresh metagraph: {e}", exc_info=True)
+                    
+            except asyncio.CancelledError:
+                logger.info("Metagraph refresh task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in metagraph refresh loop: {e}", exc_info=True)
+                await asyncio.sleep(60)  # Wait a bit before retrying on error
+    
+    metagraph_refresh_task = asyncio.create_task(refresh_metagraph_loop())
+    logger.info(f"Metagraph refresh task started (will refresh every {metagraph_refresh_interval}s)")
+    
     try:
         # Create httpx client for challenge sending
         pool_size = max(100, config.max_concurrent_availability_checks * 2)
@@ -506,6 +538,8 @@ async def main_loop():
                                 logger.error(f"Error sending challenge to node {node.node_id}: {str(e)}")
                         
                         # Process challenge results (submits response when ready - completion order)
+                        # Use configured challenge timeout or default to 120s
+                        challenge_timeout = getattr(config, 'challenge_timeout_seconds', 120)
                         await process_challenge_results(
                             new_challenge_tasks,
                             client,
@@ -517,7 +551,8 @@ async def main_loop():
                             validator=inference_validator,
                             challenge_prompt=prompt,
                             challenge_id=challenge_id,
-                            pipeline_timing=pipeline_timing
+                            pipeline_timing=pipeline_timing,
+                            max_timeout=float(challenge_timeout)
                         )
                         
                         logger.info(f"Completed processing challenge {challenge_id[:8]}...")
@@ -650,6 +685,16 @@ async def main_loop():
                 await sybil_sync_task.stop()
             except Exception as e:
                 logger.warning(f"Error stopping sybil sync task: {e}")
+        
+        if metagraph_refresh_task:
+            logger.info("Shutting down metagraph refresh task...")
+            try:
+                metagraph_refresh_task.cancel()
+                await metagraph_refresh_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error stopping metagraph refresh task: {e}")
 
 def run_main_loop():
     try:

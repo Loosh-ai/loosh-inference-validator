@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import aiohttp
+import httpx
 import numpy as np
 from loguru import logger
 from sentence_transformers import SentenceTransformer
@@ -12,12 +13,16 @@ from sentence_transformers import SentenceTransformer
 from validator.challenge.challenge_types import InferenceResponse
 from validator.db.operations import DatabaseManager
 from validator.config import get_validator_config
+from validator.network.fiber_client import ValidatorFiberClient
 
 # Import from local evaluation modules
 from .Evaluation.consensus_engine import ConsensusEngine, ConsensusConfig, ConsensusResult
 from .Recording.consensus_narrative_generator import ConsensusNarrativeGenerator, LLMConfig
 from .Recording.similarity_heatmap import generate_semantic_similarity_heatmap
 from .sybil_detection import SybilDetector, SybilDetectionResult
+
+# Fiber client cache for heatmap uploads
+_heatmap_fiber_client_cache: Dict[str, ValidatorFiberClient] = {}
 
 class InferenceValidator:
     """Validator for inference responses."""
@@ -68,7 +73,8 @@ class InferenceValidator:
         prompt: str,
         responses: List[InferenceResponse],
         miner_ids: Optional[List[int]] = None,
-        correlation_id: Optional[str] = None
+        correlation_id: Optional[str] = None,
+        validator_hotkey: Optional[str] = None
     ) -> Tuple[float, Optional[str], Optional[str], Dict[str, float]]:
         """Evaluate a set of inference responses.
         
@@ -77,6 +83,8 @@ class InferenceValidator:
             prompt: The original prompt
             responses: List of inference responses
             miner_ids: Optional list of miner UIDs corresponding to each response
+            correlation_id: Optional correlation ID for tracking
+            validator_hotkey: Optional validator hotkey SS58 for Fiber encryption
         
         Returns:
             Tuple containing:
@@ -85,6 +93,8 @@ class InferenceValidator:
             - Narrative of consensus
             - Emissions allocation
         """
+        # Store validator_hotkey for use in _upload_heatmap
+        self._validator_hotkey = validator_hotkey
         try:
             num_responses = len(responses)
             logger.info(f"[EVALUATION] Processing {num_responses} response(s) for challenge {challenge_id}")
@@ -393,6 +403,9 @@ class InferenceValidator:
     async def _upload_heatmap(self, filepath: str, challenge_id: str, file_type: str = "heatmap") -> Optional[str]:
         """Upload heatmap or quality plot to challenge API and delete local file on success.
         
+        Uses Fiber MLTS encryption if validator_hotkey is available, otherwise falls back
+        to plain HTTP with API key authentication.
+        
         Args:
             filepath: Path to the image file (heatmap or quality plot)
             challenge_id: The challenge ID (UUID) associated with this file
@@ -401,10 +414,9 @@ class InferenceValidator:
         Returns:
             The filepath if upload was successful, None otherwise
         """
+        file_type_label = "heatmap" if file_type == "heatmap" else "quality plot"
+        
         try:
-            # Construct the challenge API endpoint URL
-            upload_url = f"{self.config.challenge_api_url}/heatmap/upload"
-            
             # Determine content type from file extension
             file_ext = os.path.splitext(filepath)[1].lower()
             content_type_map = {
@@ -416,53 +428,177 @@ class InferenceValidator:
             }
             content_type = content_type_map.get(file_ext, "image/png")  # Default to PNG
             
-            # Determine file type label for logging
-            file_type_label = "heatmap" if file_type == "heatmap" else "quality plot"
+            # Read file data
+            with open(filepath, "rb") as f:
+                file_data = f.read()
             
-            async with aiohttp.ClientSession() as session:
-                with open(filepath, "rb") as f:
-                    data = aiohttp.FormData()
-                    data.add_field(
-                        "file",
-                        f,
-                        filename=os.path.basename(filepath),
-                        content_type=content_type
+            filename = os.path.basename(filepath)
+            
+            # Try Fiber encryption first (if validator_hotkey is available)
+            validator_hotkey = getattr(self, '_validator_hotkey', None)
+            if validator_hotkey:
+                result_filename = await self._upload_heatmap_fiber(
+                    file_data=file_data,
+                    filename=filename,
+                    challenge_id=challenge_id,
+                    file_type=file_type,
+                    content_type=content_type,
+                    validator_hotkey=validator_hotkey
+                )
+                
+                if result_filename:
+                    # Delete local file after successful upload
+                    try:
+                        os.remove(filepath)
+                        logger.debug(f"Deleted local {file_type_label} file: {filepath}")
+                    except OSError as e:
+                        logger.warning(f"Failed to delete local {file_type_label} file {filepath}: {e}")
+                    return result_filename
+                else:
+                    logger.warning(
+                        f"Fiber upload failed for {file_type_label}, falling back to plain HTTP"
                     )
-                    data.add_field("challenge_id", str(challenge_id))
-                    data.add_field("file_type", file_type)
-                    
-                    headers = {
-                        "X-API-Key": self.config.challenge_api_key
-                    }
-                    
-                    async with session.post(upload_url, data=data, headers=headers) as response:
-                        if response.status == 201:
-                            result = await response.json()
-                            logger.info(
-                                f"Successfully uploaded {file_type_label} for challenge {challenge_id}: "
-                                f"{result.get('filename', 'unknown')}"
-                            )
-                            
-                            # Delete local file after successful upload
-                            try:
-                                os.remove(filepath)
-                                logger.debug(f"Deleted local {file_type_label} file: {filepath}")
-                            except OSError as e:
-                                logger.warning(f"Failed to delete local {file_type_label} file {filepath}: {e}")
-                            
-                            # Return the filepath from challenge API (if provided)
-                            return result.get("filepath", filepath)
-                        else:
-                            error_text = await response.text()
-                            logger.warning(
-                                f"Failed to upload {file_type_label} for challenge {challenge_id}: "
-                                f"HTTP {response.status} - {error_text}"
-                            )
-                            return None
+            
+            # Fallback to plain HTTP
+            return await self._upload_heatmap_http(
+                filepath=filepath,
+                file_data=file_data,
+                filename=filename,
+                challenge_id=challenge_id,
+                file_type=file_type,
+                content_type=content_type,
+                file_type_label=file_type_label
+            )
             
         except FileNotFoundError:
             logger.error(f"{file_type_label.capitalize()} file not found: {filepath}")
             return None
         except Exception as e:
             logger.error(f"Error uploading {file_type_label} to challenge API: {str(e)}", exc_info=True)
-            return None 
+            return None
+    
+    async def _upload_heatmap_fiber(
+        self,
+        file_data: bytes,
+        filename: str,
+        challenge_id: str,
+        file_type: str,
+        content_type: str,
+        validator_hotkey: str
+    ) -> Optional[str]:
+        """Upload heatmap using Fiber MLTS encryption.
+        
+        Args:
+            file_data: Raw file bytes
+            filename: Original filename
+            challenge_id: Challenge ID (UUID)
+            file_type: Type of file - "heatmap" or "quality_plot"
+            content_type: MIME content type
+            validator_hotkey: Validator's SS58 hotkey for Fiber authentication
+            
+        Returns:
+            Filename if successful, None otherwise
+        """
+        global _heatmap_fiber_client_cache
+        
+        try:
+            server_address = self.config.challenge_api_url
+            
+            # Get or create Fiber client
+            cache_key = f"{validator_hotkey}:{server_address}"
+            if cache_key not in _heatmap_fiber_client_cache:
+                _heatmap_fiber_client_cache[cache_key] = ValidatorFiberClient(
+                    validator_hotkey_ss58=validator_hotkey,
+                    private_key=None,  # TODO: Load from Bittensor wallet
+                    key_ttl_seconds=3600,
+                    handshake_timeout_seconds=30
+                )
+            
+            fiber_client = _heatmap_fiber_client_cache[cache_key]
+            
+            async with httpx.AsyncClient() as client:
+                result_filename = await fiber_client.send_encrypted_upload(
+                    challenge_api_endpoint=server_address,
+                    file_data=file_data,
+                    filename=filename,
+                    challenge_id=challenge_id,
+                    file_type=file_type,
+                    content_type=content_type,
+                    client=client
+                )
+                return result_filename
+                
+        except Exception as e:
+            logger.error(f"Error in Fiber heatmap upload: {e}", exc_info=True)
+            return None
+    
+    async def _upload_heatmap_http(
+        self,
+        filepath: str,
+        file_data: bytes,
+        filename: str,
+        challenge_id: str,
+        file_type: str,
+        content_type: str,
+        file_type_label: str
+    ) -> Optional[str]:
+        """Upload heatmap using plain HTTP with API key (fallback).
+        
+        Args:
+            filepath: Path to the image file
+            file_data: Raw file bytes
+            filename: Original filename
+            challenge_id: Challenge ID (UUID)
+            file_type: Type of file - "heatmap" or "quality_plot"
+            content_type: MIME content type
+            file_type_label: Human-readable file type for logging
+            
+        Returns:
+            Filepath if successful, None otherwise
+        """
+        try:
+            upload_url = f"{self.config.challenge_api_url}/heatmap/upload"
+            
+            async with aiohttp.ClientSession() as session:
+                data = aiohttp.FormData()
+                data.add_field(
+                    "file",
+                    file_data,
+                    filename=filename,
+                    content_type=content_type
+                )
+                data.add_field("challenge_id", str(challenge_id))
+                data.add_field("file_type", file_type)
+                
+                headers = {
+                    "X-API-Key": self.config.challenge_api_key
+                }
+                
+                async with session.post(upload_url, data=data, headers=headers) as response:
+                    if response.status == 201:
+                        result = await response.json()
+                        logger.info(
+                            f"Successfully uploaded {file_type_label} for challenge {challenge_id}: "
+                            f"{result.get('filename', 'unknown')}"
+                        )
+                        
+                        # Delete local file after successful upload
+                        try:
+                            os.remove(filepath)
+                            logger.debug(f"Deleted local {file_type_label} file: {filepath}")
+                        except OSError as e:
+                            logger.warning(f"Failed to delete local {file_type_label} file {filepath}: {e}")
+                        
+                        # Return the filepath from challenge API (if provided)
+                        return result.get("filepath", filepath)
+                    else:
+                        error_text = await response.text()
+                        logger.warning(
+                            f"Failed to upload {file_type_label} for challenge {challenge_id}: "
+                            f"HTTP {response.status} - {error_text}"
+                        )
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error in HTTP heatmap upload: {e}", exc_info=True)
+            return None

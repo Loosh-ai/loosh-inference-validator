@@ -17,7 +17,7 @@ class ValidatorConfig(BaseSettings):
     """Configuration for the validator using Pydantic 2 BaseSettings."""
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=("/workspace/.env", ".env"),  # Check RunPod location first, then local
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"
@@ -83,6 +83,12 @@ class ValidatorConfig(BaseSettings):
     @property
     def weights_interval(self) -> timedelta:
         return timedelta(seconds=self.weights_interval_seconds)
+    
+    # Metagraph refresh interval (in seconds) - how often to refresh node list from chain
+    metagraph_refresh_interval_seconds: int = Field(
+        default=300, 
+        description="Metagraph refresh interval (seconds) - how often to fetch new node registrations from chain"
+    )
     
     # API configuration
     api_host: str = Field(default="0.0.0.0", description="API host")
