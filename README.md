@@ -2,12 +2,12 @@
 
 A Bittensor subnet validator for LLM inference evaluation that powers the [Loosh](https://www.loosh.ai) decentralized AI inference network. This validator evaluates miner responses and allocates emissions based on response quality, enabling real-time LLM inference for Loosh's agentic systems, including the Loosh AI agent at [app.loosh.ai](https://app.loosh.ai).
 
-> **🔒 VALIDATOR ALLOWLIST REQUIRED**  
-> **IMPORTANT:** Validators must be added to our allowlist before they can participate in the network. To become an approved validator, please contact us:
+> **🔒 VALIDATOR REGISTRATION**  
+> **IMPORTANT:** We're currently onboarding validators and need to coordinate setup to ensure network stability. Please contact us to get started:
 > - **Discord**: [Join our Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
 > - **Email**: hello@loosh.ai
 > 
-> We review validator applications to ensure network quality and security. Please include your hotkey address and a brief description of your setup when contacting us.
+> We'll help you get configured and connected to the Challenge API. This is a temporary onboarding process as we scale up the network.
 
 ## Overview
 
@@ -249,7 +249,7 @@ btcli wallet overview \
 - You need sufficient TAO in your coldkey to register on the subnet
 - Registration requires a one-time fee (check current subnet registration cost)
 - The wallet must be located in `~/.bittensor/wallets` (Fiber requirement)
-- **Validators must be added to the allowlist** - contact us at hello@loosh.ai or via [Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
+- **Contact us for validator onboarding** - we'll help you connect to the Challenge API (hello@loosh.ai or Discord)
 
 ### Step 2: Post Your IP Address
 
@@ -282,7 +282,7 @@ We **strongly recommend testing your validator on testnet first** before deployi
 - **Active network**: Receive actual challenges from the testnet Challenge API
 - **Quick feedback**: You should receive challenges within a few minutes (depending on network volume)
 - **Debug issues**: Identify and fix problems before mainnet deployment
-- **Allowlist testing**: Test your validator configuration before applying for mainnet allowlist
+- **Coordinate setup**: Work with us to ensure proper configuration before mainnet
 
 ### Testnet Setup Steps
 
@@ -361,7 +361,7 @@ pm2 logs loosh-inference-validator --lines 100
 - Responses evaluated and submitted back to Challenge API
 - No errors in the logs
 
-Once your validator is working correctly on testnet, you can apply for mainnet allowlist access.
+Once your validator is working correctly on testnet, contact us to coordinate your mainnet deployment.
 
 ## Configuration
 
