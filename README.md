@@ -1,6 +1,86 @@
 # Loosh Inference Validator
 
-A Bittensor subnet validator for LLM inference evaluation. This validator evaluates miner responses and allocates emissions based on response quality.
+A Bittensor subnet validator for LLM inference evaluation that powers the [Loosh](https://www.loosh.ai) decentralized AI inference network. This validator evaluates miner responses and allocates emissions based on response quality, enabling real-time LLM inference for Loosh's agentic systems, including the Loosh AI agent at [app.loosh.ai](https://app.loosh.ai).
+
+> **🔒 VALIDATOR ALLOWLIST REQUIRED**  
+> **IMPORTANT:** Validators must be added to our allowlist before they can participate in the network. To become an approved validator, please contact us:
+> - **Discord**: [Join our Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
+> - **Email**: hello@loosh.ai
+> 
+> We review validator applications to ensure network quality and security. Please include your hotkey address and a brief description of your setup when contacting us.
+
+## Overview
+
+The Loosh Inference Subnet is a decentralized network that delivers high-quality, low-latency LLM inference to AI agents and applications. Validators play a critical role in this ecosystem:
+
+- **Challenge Distribution**: Receives inference requests from the Challenge API and distributes them to miners
+- **Quality Evaluation**: Evaluates miner responses using consensus-based scoring and similarity metrics
+- **Emissions Allocation**: Rewards miners based on response quality, speed, and consensus participation
+- **Network Coordination**: Integrates with the Challenge API to serve production AI systems at [app.loosh.ai](https://app.loosh.ai)
+
+For more information about Loosh and the decentralized AI inference network, visit [www.loosh.ai](https://www.loosh.ai).
+
+## Architecture
+
+The Loosh Inference Subnet uses a multi-layered architecture to deliver decentralized, high-quality AI inference:
+
+```mermaid
+graph TB
+    User[User/Agent<br/>app.loosh.ai] -->|Inference Request| Gateway[Inference Gateway]
+    Gateway -->|Create Challenge| ChallengeAPI[Challenge API]
+    ChallengeAPI -->|Publish| Fluvio[Fluvio Topic]
+    Fluvio -->|Consume| Validator[Validator<br/>this repository]
+    Validator -->|Encrypted Challenge| Miner1[Miner 1]
+    Validator -->|Encrypted Challenge| Miner2[Miner 2]
+    Validator -->|Encrypted Challenge| MinerN[Miner N...]
+    Miner1 -->|Encrypted Response| Validator
+    Miner2 -->|Encrypted Response| Validator
+    MinerN -->|Encrypted Response| Validator
+    Validator -->|Evaluate & Select Best| Validator
+    Validator -->|Submit Best Response| ChallengeAPI
+    ChallengeAPI -->|Notify| Fluvio
+    Fluvio -->|Response Available| Gateway
+    Gateway -->|Return Response| User
+    
+    style User fill:#e1f5ff
+    style Gateway fill:#fff4e1
+    style ChallengeAPI fill:#ffe1f5
+    style Validator fill:#e1ffe1
+    style Miner1 fill:#f5e1ff
+    style Miner2 fill:#f5e1ff
+    style MinerN fill:#f5e1ff
+    style Fluvio fill:#ffffcc
+```
+
+### Component Roles
+
+- **Inference Gateway**: Receives inference requests from users/agents, creates challenges, and returns responses
+- **Challenge API**: Manages challenge lifecycle, stores responses, and coordinates between gateway and validators
+- **Fluvio**: High-performance streaming platform for event distribution (challenges and responses)
+- **Validator** (this repository): Distributes challenges to miners, evaluates responses, and selects the best answer
+- **Miner** ([loosh-inference-miner](https://github.com/Loosh-ai/loosh-inference-miner)): Executes LLM inference and responds to challenges
+
+### Request Flow
+
+1. **User Request**: Agent or user sends inference request to Gateway
+2. **Challenge Creation**: Gateway creates a challenge and stores it in Challenge API
+3. **Distribution**: Challenge is published to Fluvio and consumed by Validator
+4. **Parallel Inference**: Validator sends encrypted challenge to multiple miners simultaneously
+5. **Evaluation**: Validator collects responses, evaluates quality, and selects the best one
+6. **Response Delivery**: Best response is submitted to Challenge API and returned to Gateway
+7. **User Response**: Gateway returns the response to the user/agent
+
+### Security
+
+All validator-miner communication uses **Fiber MLTS** (Multi-Layer Transport Security):
+- RSA-based key exchange for secure channel establishment
+- Symmetric encryption (Fernet) for challenge and response payloads
+- Per-miner session keys with automatic rotation
+
+## Quick Start
+
+- **[Validator Quickstart Guide](docs/VALIDATOR_QUICKSTART.md)** - Get started in minutes with step-by-step setup instructions for all deployment options
+- **[RunPod Deployment Guide](docs/RUNPOD_DEPLOYMENT.md)** - Deploy on RunPod GPU instances with complete setup instructions
 
 ## Project Structure
 
@@ -38,110 +118,143 @@ loosh-inference-validator/
 
 ## Requirements
 
-- Python 3.12+
-- uv (Python package installer) - [Installation instructions](https://github.com/astral-sh/uv)
-- uvicorn (ASGI web server) - Included in dependencies, used to run the FastAPI application
-- fiber (Bittensor network library) - Required for Bittensor network operations and MLTS security (automatically installed via pyproject.toml)
-- Bittensor wallet with sufficient stake
-- Access to Challenge API
-- LLM inference endpoint (OpenAI Chat Completions API compatible) - Required for generating consensus narratives during evaluation. 
-  
-  **IMPORTANT**: The API endpoint must implement the [OpenAI Chat Completions API format](https://platform.openai.com/docs/api-reference/chat/create). The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model. You can use any model (Llama, Qwen, Mistral, etc.) as long as the API follows OpenAI's format.
-  
-  Compatible endpoints include:
-  - OpenAI API (https://api.openai.com/v1/chat/completions)
-  - Azure OpenAI
-  - vLLM (self-hosted)
-  - Ollama (with OpenAI compatibility mode)
-  - Any endpoint implementing the OpenAI Chat Completions API format
+### System Requirements
+
+- **Python**: 3.12+
+- **uv** (Python package installer) - [Installation instructions](https://github.com/astral-sh/uv)
+- **uvicorn** (ASGI web server) - Included in dependencies
+- **Fiber** (Bittensor network library) - Required for Bittensor network operations and MLTS security (automatically installed via pyproject.toml)
+- **Bittensor wallet** with sufficient stake
+- **Access to Challenge API** (provided by Loosh)
+
+### Hardware Requirements
+
+**GPU Highly Recommended**: While the validator does not perform LLM inference, it uses GPU acceleration for embedding generation (sentence-transformers) to evaluate miner responses efficiently. **High-volume challenge processing requires GPU acceleration.**
+
+**Minimum Specifications:**
+- **GPU**: 16GB VRAM (NVIDIA T4 or better)
+- **CPU**: 4+ cores
+- **RAM**: 16GB+
+- **Storage**: 100GB+ SSD
+- **Network**: Stable connection with low latency
+
+**Recommended Specifications:**
+- **GPU**: 24GB VRAM (NVIDIA A10, RTX 3090, or better)
+- **CPU**: 8+ cores
+- **RAM**: 32GB+
+- **Storage**: 250GB+ NVMe SSD
+- **Network**: High-bandwidth connection (1Gbps+)
+
+**Why GPU is Important:**
+- **Embedding Generation**: Sentence transformers run on GPU for fast semantic similarity calculations
+- **High Volume**: GPU acceleration enables processing 10-20+ challenges concurrently
+- **Response Time**: GPU reduces evaluation time from seconds to milliseconds per response
+- **Consensus Evaluation**: Faster embeddings allow thorough consensus analysis across all miner responses
+
+See **[min_compute.yml](min_compute.yml)** for detailed hardware specifications, recommended GPU configurations, and deployment guidelines for high-volume validation.
+
+### Optional Requirements
+
+**LLM Inference Endpoint**: Only required if `ENABLE_NARRATIVE_GENERATION=true` (NOT recommended for production).
+
+**Note on LLM Inference:** The validator does NOT require LLM inference for core operation. Inference is only used for generating optional consensus narratives. For production deployments, this should be disabled (`ENABLE_NARRATIVE_GENERATION=false`).
 
 ## Installation
 
-1. Clone the repository:
+### 1. Install System Dependencies
+
+First, install uv and Fiber:
+
+```bash
+# Install uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# or
+pip install uv
+
+# Install Fiber for subnet registration
+pip install substrate-interface-fiber
+```
+
+### 2. Clone the Repository
+
 ```bash
 git clone https://github.com/loosh-ai/loosh-inference-validator.git
 cd loosh-inference-validator
 ```
 
-2. Install uv (if not already installed):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# or
-pip install uv
-```
+### 3. Install Dependencies
 
-3. Install dependencies:
 ```bash
 uv sync
 ```
 
 This will automatically create a virtual environment and install all dependencies from `pyproject.toml`, including Fiber MLTS.
 
-**Note:** Fiber is automatically installed via `pyproject.toml` dependencies. If you need to install manually:
-```bash
-# Activate the virtual environment first
-source .venv/bin/activate  # Linux/Mac
-# or
-.venv\Scripts\activate  # Windows
-
-# Install Fiber MLTS from git repository
-uv pip install "git+https://github.com/chutesai/fiber.git@a41ab890708757140a3cf4aae8e5af57a8b03159#egg=fiber[full]"
-```
-
-
 To activate the virtual environment:
+
 ```bash
 source .venv/bin/activate  # Linux/Mac
 # or
 .venv\Scripts\activate  # Windows
 ```
+
+### 4. Create Bittensor Wallet
+
+If you don't already have a Bittensor wallet:
+
+```bash
+# Install btcli
+pip install bittensor
+
+# Create a new coldkey (stores your tokens)
+btcli wallet new_coldkey --wallet.name validator
+
+# Create a new hotkey (used for validation)
+btcli wallet new_hotkey --wallet.name validator --wallet.hotkey validator
+```
+
+**Important**: Keep your coldkey seed phrase secure! Store it in a password manager or write it down and keep it in a safe place.
+
+**Note:** Fiber only supports wallets in `~/.bittensor/wallets`. Custom wallet paths are not supported.
 
 ## Subnet Registration
 
-Before running the validator, you must register it on the Bittensor subnet. This is a two-step process:
+Before running the validator, you must register it on the Bittensor subnet.
 
-### Step 1: Register with btcli
+### Step 1: Register Your Subnet UID
 
-First, register your validator on the subnet using `btcli`:
+Register your subnet UID using the Bittensor CLI:
 
 ```bash
-btcli subnet register \
-  --netuid <NETUID> \
-  --subtensor.network <NETWORK> \
-  --wallet.name <WALLET_NAME> \
-  --wallet.hotkey <HOTKEY_NAME>
-```
-
-**Example:**
-```bash
+# Register on the subnet
 btcli subnet register \
   --netuid 78 \
   --subtensor.network finney \
   --wallet.name validator \
   --wallet.hotkey validator
+
+# Verify registration
+btcli wallet overview \
+  --wallet.name validator \
+  --netuid 78
 ```
 
-**Note:** 
-- Replace `<NETUID>` with your subnet UID (e.g., 78)
-- Replace `<NETWORK>` with the network name (e.g., `finney`, `test`, `local`)
-- Replace `<WALLET_NAME>` and `<HOTKEY_NAME>` with your wallet configuration
-- This command requires sufficient TAO balance to cover the registration cost
+**Registration Parameters:**
+- `--netuid`: Subnet UID (78 for Loosh Inference Subnet on mainnet)
+- `--subtensor.network`: Network name (`finney` for mainnet, `test` for testnet)
+- `--wallet.name`: Your wallet name
+- `--wallet.hotkey`: Your hotkey name
 
-### Step 2: Post IP with Fiber
+**Important Notes:**
+- You need sufficient TAO in your coldkey to register on the subnet
+- Registration requires a one-time fee (check current subnet registration cost)
+- The wallet must be located in `~/.bittensor/wallets` (Fiber requirement)
+- **Validators must be added to the allowlist** - contact us at hello@loosh.ai or via [Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
 
-After registering, post your validator's IP address using Fiber's `fiber-post-ip` command:
+### Step 2: Post Your IP Address
 
-```bash
-fiber-post-ip \
-  --netuid <NETUID> \
-  --subtensor.network <NETWORK> \
-  --external_port <YOUR-PORT> \
-  --wallet.name <WALLET_NAME> \
-  --wallet.hotkey <HOTKEY_NAME> \
-  --external_ip <YOUR-IP>
-```
+After registration, you must post your validator's endpoint to the chain using Fiber:
 
-**Example:**
 ```bash
 fiber-post-ip \
   --netuid 78 \
@@ -149,14 +262,106 @@ fiber-post-ip \
   --external_port 8000 \
   --wallet.name validator \
   --wallet.hotkey validator \
-  --external_ip 1.2.3.4
+  --external_ip <YOUR-PUBLIC-IP>
 ```
 
-**Note:** 
-- Replace `<YOUR-PORT>` with the port your validator API will run on (e.g., 8000)
-- Replace `<YOUR-IP>` with your validator's public IP address
-- The wallet must be located in `~/.bittensor/wallets` (Fiber requirement)
-- You may need to run this command periodically to keep your validator's IP address updated on the subnet
+**Note:** This step only updates your endpoint on the chain. It does NOT register your UID. You must complete Step 1 first. You will need to run this command any time your IP address or port changes.
+
+## Testing on Testnet (Recommended)
+
+> **⚠️ IMPORTANT: Testnet Only Currently Active**  
+> As of now, **only testnet is operational**. The mainnet will go live on **February 1, 2026**.  
+> All validators should start on testnet to test their setup and ensure everything works correctly before mainnet launch.
+
+We **strongly recommend testing your validator on testnet first** before deploying to mainnet. There is an active Challenge API running on testnet that will send you real challenges.
+
+### Why Test on Testnet?
+
+- **No cost**: Test TAO is free from the faucet
+- **Safe environment**: Test your setup without risking real TAO
+- **Active network**: Receive actual challenges from the testnet Challenge API
+- **Quick feedback**: You should receive challenges within a few minutes (depending on network volume)
+- **Debug issues**: Identify and fix problems before mainnet deployment
+- **Allowlist testing**: Test your validator configuration before applying for mainnet allowlist
+
+### Testnet Setup Steps
+
+#### 1. Get Test TAO
+
+Visit the Miners Union testnet faucet to get free test TAO:
+
+**Testnet Faucet**: [https://app.minersunion.ai/testnet-faucet](https://app.minersunion.ai/testnet-faucet)
+
+You'll need test TAO to register on the testnet subnet.
+
+#### 2. Register on Testnet
+
+```bash
+# Register on testnet subnet 78
+btcli subnet register \
+  --netuid 78 \
+  --subtensor.network test \
+  --wallet.name validator \
+  --wallet.hotkey validator
+
+# Verify registration
+btcli wallet overview \
+  --wallet.name validator \
+  --netuid 78 \
+  --subtensor.network test
+```
+
+#### 3. Post Your IP Address
+
+```bash
+fiber-post-ip \
+  --netuid 78 \
+  --subtensor.network test \
+  --external_port 8000 \
+  --wallet.name validator \
+  --wallet.hotkey validator \
+  --external_ip <YOUR-PUBLIC-IP>
+```
+
+#### 4. Configure for Testnet
+
+Update your `.env` file for testnet:
+
+```bash
+# Network Configuration
+NETUID=78
+SUBTENSOR_NETWORK=test
+SUBTENSOR_ADDRESS=wss://test.finney.opentensor.ai:443
+
+# Challenge API Configuration (testnet)
+CHALLENGE_API_BASE_URL=https://challenge-test.loosh.ai
+
+# Rest of your configuration...
+```
+
+#### 5. Run Your Validator
+
+Start your validator and monitor the logs. You should receive challenges from the testnet Challenge API within a few minutes (depending on network volume).
+
+#### 6. Verify Challenge Reception
+
+Check your validator logs for incoming challenges:
+
+```bash
+# If running with uvicorn directly
+# Watch for "Received encrypted challenge" messages
+
+# If using PM2
+pm2 logs loosh-inference-validator --lines 100
+```
+
+**Expected behavior:**
+- Challenge received within 1-10 minutes
+- Challenge distributed to miners
+- Responses evaluated and submitted back to Challenge API
+- No errors in the logs
+
+Once your validator is working correctly on testnet, you can apply for mainnet allowlist access.
 
 ## Configuration
 
@@ -181,9 +386,9 @@ The validator does NOT need to run inference for evaluation. Narrative generatio
 
 ## Running
 
-### Starting the Validator
-
 The validator runs as a FastAPI application using uvicorn. The API server exposes endpoints for challenge submission and validator management, while the main validation loop runs in the background.
+
+### Starting the Validator
 
 #### Direct Execution
 
@@ -206,69 +411,76 @@ PYTHONPATH=. uv run python -m validator.validator_server
 
 This will automatically read `API_HOST` and `API_PORT` from your `.env` file.
 
+**Access the API documentation:**
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+- **OpenAPI JSON**: http://localhost:8000/openapi.json
+
+#### Using the Provided Script
+
+```bash
+./run-validator.sh
+```
+
 #### Using PM2 (Recommended for Production)
 
 PM2 is a process manager that provides automatic restarts, logging, and monitoring. It's recommended for production deployments.
 
 **Prerequisites:**
+
+Install PM2 globally:
+
 ```bash
 npm install -g pm2
 ```
 
 **Starting with PM2:**
 
-1. Navigate to the project directory:
+1. Ensure you have a `.env` file configured (see Configuration section above)
+
+2. Create the logs directory:
+
 ```bash
-cd loosh-inference-validator
+mkdir -p logs
 ```
 
-2. Start the validator:
+3. Start the validator:
+
 ```bash
 pm2 start PM2/ecosystem.config.js
 ```
 
 **Note:** The PM2 configuration runs the validator using uvicorn. Make sure to update `PM2/ecosystem.config.js` to use uvicorn if it's not already configured.
 
-3. Check status:
-```bash
-pm2 status
-```
+#### PM2 Management Commands
 
-4. View logs:
-```bash
-pm2 logs loosh-inference-validator
-```
+- **View status**: `pm2 status`
+- **View logs**: `pm2 logs loosh-inference-validator`
+- **Stop validator**: `pm2 stop loosh-inference-validator`
+- **Restart validator**: `pm2 restart loosh-inference-validator`
+- **Delete from PM2**: `pm2 delete loosh-inference-validator`
+- **Monitor**: `pm2 monit`
+- **Save PM2 process list**: `pm2 save`
+- **Setup PM2 to start on system boot**: `pm2 startup`
 
-5. Stop the validator:
-```bash
-pm2 stop loosh-inference-validator
-```
+#### Configuration
 
-6. Restart the validator:
-```bash
-pm2 restart loosh-inference-validator
-```
+The PM2 configuration file is located at `PM2/ecosystem.config.js`. It runs the validator using uvicorn. You can customize:
 
-7. Delete from PM2:
-```bash
-pm2 delete loosh-inference-validator
-```
-
-**PM2 Configuration:**
-
-The PM2 configuration file is located at `PM2/ecosystem.config.js`. It runs the validator using uvicorn. You can customize it by:
-
-- Setting `PYTHON_INTERPRETER` environment variable to use a specific Python interpreter (e.g., `.venv/bin/python3`)
-- Setting `VALIDATOR_WORKDIR` environment variable to specify the working directory
-- Setting `API_HOST` and `API_PORT` environment variables to configure the server address
-- Adjusting memory limits, restart policies, and logging paths in the config file
+- `VALIDATOR_WORKDIR`: Working directory (defaults to current directory)
+- `PYTHON_INTERPRETER`: Python interpreter path (defaults to `python3`)
+- `API_HOST` and `API_PORT`: Server address configuration
+- `max_memory_restart`: Maximum memory before restart (default: 8G)
+- Log file paths and other PM2 options
 
 **Example with virtual environment:**
+
 ```bash
 PYTHON_INTERPRETER=./.venv/bin/python3 pm2 start PM2/ecosystem.config.js
 ```
 
 **Example with custom port:**
+
 ```bash
 API_PORT=8020 pm2 start PM2/ecosystem.config.js
 ```
@@ -278,12 +490,54 @@ API_PORT=8020 pm2 start PM2/ecosystem.config.js
 - `logs/validator-out.log` - Standard output logs
 - `logs/validator-combined.log` - Combined logs with timestamps
 
-**PM2 Useful Commands:**
-- `pm2 monit` - Real-time monitoring dashboard
-- `pm2 save` - Save current process list
-- `pm2 startup` - Generate startup script for system boot
-- `pm2 logs` - View all logs
-- `pm2 flush` - Clear all logs
+### Auto-Update Script (PM2 Only)
+
+The validator includes an auto-update script that monitors the git repository for changes and automatically updates and restarts the validator.
+
+**Important:** This script is designed to work with **PM2 deployments only**. If you're using Docker, RunPod, or direct execution, you'll need to modify the script for your deployment method.
+
+#### How It Works
+
+The `validator_auto_update.sh` script:
+1. Monitors the git repository for new commits
+2. Automatically pulls updates when detected
+3. Runs `uv sync` to update dependencies
+4. Restarts the PM2 process with the new code
+
+#### Usage
+
+```bash
+# Make the script executable
+chmod +x validator_auto_update.sh
+
+# Run with default PM2 process name (loosh-inference-validator)
+./validator_auto_update.sh
+
+# Or specify a custom PM2 process name
+./validator_auto_update.sh my-validator-process
+
+# Run in the background
+nohup ./validator_auto_update.sh > auto-update.log 2>&1 &
+```
+
+#### Running as a PM2 Process
+
+You can run the auto-updater itself as a PM2 process:
+
+```bash
+pm2 start validator_auto_update.sh --name validator-auto-updater -- loosh-inference-validator
+pm2 save
+```
+
+#### For Other Deployment Methods
+
+If you're using Docker, RunPod, or another deployment method, you'll need to modify the script:
+
+- **Docker**: Replace PM2 restart with `docker restart <container-name>`
+- **RunPod**: Add logic to restart the pod or container
+- **Direct Execution**: Replace PM2 restart with your process management method
+
+The script provides a good starting point for implementing auto-updates in your environment.
 
 ## Docker Deployment
 
@@ -311,6 +565,8 @@ docker run -d \
 
 ## API Endpoints
 
+The validator exposes a FastAPI application with the following endpoints:
+
 ### Standard Endpoints
 - `GET /availability` - Check validator availability
 - `POST /challenges` - Submit a challenge to the validator (legacy endpoint, deprecated in favor of Fiber)
@@ -325,7 +581,14 @@ docker run -d \
 - `POST /fiber/challenge` - Receive encrypted challenge from Challenge API
 - `GET /fiber/stats` - Get Fiber server statistics
 
-**Note:** New integrations should use the Fiber-encrypted `/fiber/challenge` endpoint instead of the legacy `/challenges` endpoint.
+**Note:** The Challenge API uses the Fiber-encrypted `/fiber/challenge` endpoint for secure challenge distribution.
+
+### API Documentation
+
+The validator includes interactive API documentation:
+- **Swagger UI** (`/docs`): Interactive API documentation where you can test endpoints directly
+- **ReDoc** (`/redoc`): Clean, responsive API documentation
+- **OpenAPI JSON** (`/openapi.json`): Machine-readable API specification
 
 ## Inference Configuration
 
@@ -547,5 +810,5 @@ Both databases and their schemas are automatically initialized on first startup.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
