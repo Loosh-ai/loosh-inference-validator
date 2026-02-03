@@ -2,12 +2,12 @@
 
 A Bittensor subnet validator for LLM inference evaluation that powers the [Loosh](https://www.loosh.ai) decentralized AI inference network. This validator evaluates miner responses and allocates emissions based on response quality, enabling real-time LLM inference for Loosh's agentic systems, including the Loosh AI agent at [app.loosh.ai](https://app.loosh.ai).
 
-> **🔒 VALIDATOR REGISTRATION**  
-> **IMPORTANT:** We're currently onboarding validators and need to coordinate setup to ensure network stability. Please contact us to get started:
+> **🚀 AUTOMATIC VALIDATOR REGISTRATION**  
+> Validators are now automatically discovered and registered when they post their IP to the Fiber chain. Simply follow the quickstart guide, register on-chain with `fiber-post-ip`, and you'll automatically start receiving challenges within ~60 seconds. No manual coordination required!
+> 
+> For questions or support:
 > - **Discord**: [Join our Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
 > - **Email**: hello@loosh.ai
-> 
-> We'll help you get configured and connected to the Challenge API. This is a temporary onboarding process as we scale up the network.
 
 ## Overview
 
