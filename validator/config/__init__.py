@@ -21,5 +21,6 @@ spec.loader.exec_module(config_module)
 # Re-export the classes
 ValidatorConfig = config_module.ValidatorConfig
 get_validator_config = config_module.get_validator_config
+validator_config_to_bittensor_config = config_module.validator_config_to_bittensor_config
 
-__all__ = ['ValidatorConfig', 'get_validator_config']
+__all__ = ['ValidatorConfig', 'get_validator_config', 'validator_config_to_bittensor_config']

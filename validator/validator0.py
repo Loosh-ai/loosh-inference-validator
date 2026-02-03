@@ -88,6 +88,7 @@ def load_config(type='validator'):
     
     bt.logging.info(f"Starting validator with configuration:")
     bt.logging.info(f"Network: {config.subtensor_network}")
+    bt.logging.info(f"Chain Endpoint: {config.subtensor_address}")
     bt.logging.info(f"Subnet: {config.netuid}")
     bt.logging.info(f"Wallet: {config.wallet_name}")
     bt.logging.info(f"Hotkey: {config.hotkey_name}")
@@ -122,6 +123,7 @@ class Validator:
             "status": status,
             "validator": {
                 "network": self.config.subtensor_network,
+                "chain_endpoint": self.config.subtensor_address,
                 "netuid": self.config.netuid,
                 "wallet": self.config.wallet_name,
                 "hotkey": self.config.hotkey_name,

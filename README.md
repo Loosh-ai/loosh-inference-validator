@@ -81,6 +81,7 @@ All validator-miner communication uses **Fiber MLTS** (Multi-Layer Transport Sec
 
 - **[Validator Quickstart Guide](docs/VALIDATOR_QUICKSTART.md)** - Get started in minutes with step-by-step setup instructions for all deployment options
 - **[RunPod Deployment Guide](docs/RUNPOD_DEPLOYMENT.md)** - Deploy on RunPod GPU instances with complete setup instructions
+- **[Custom Chain Endpoint Configuration](docs/CUSTOM_CHAIN_ENDPOINT.md)** - Configure custom subtensor endpoints for improved reliability and performance
 
 ## Project Structure
 
@@ -390,7 +391,39 @@ The validator runs as a FastAPI application using uvicorn. The API server expose
 
 ### Starting the Validator
 
-#### Direct Execution
+#### Option 1: Using the Convenience Scripts (Testing Only)
+
+For quick testing and development, use the provided convenience scripts:
+
+```bash
+# Interactive mode (foreground, see logs in terminal)
+./run-validator.sh
+
+# Headless mode (background, logs to file)
+./run-validator.sh --headless
+
+# Stop the validator
+./stop-validator.sh
+
+# Help
+./run-validator.sh --help
+```
+
+**Features:**
+- Loads configuration from `.env` automatically
+- Verifies wallet and hotkey exist before starting
+- Handles graceful shutdown (SIGTERM, SIGINT)
+- Creates timestamped logs in `logs/` directory
+- PID management for stop script
+
+**⚠️ Production Warning:** While these scripts work fine for testing, **we strongly recommend using PM2 or Docker for production deployments**. PM2 and Docker provide:
+- Automatic restart on crashes
+- Better process monitoring
+- Log rotation
+- Resource management
+- Fault recovery
+
+#### Option 2: Direct Execution (Development)
 
 ```bash
 PYTHONPATH=. uv run uvicorn validator.validator_server:app --host 0.0.0.0 --port 8000

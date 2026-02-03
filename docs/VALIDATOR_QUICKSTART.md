@@ -17,10 +17,11 @@ Complete guide for setting up and running a validator on the Loosh Inference Sub
   - [Bittensor Wallet Setup](#bittensor-wallet-setup)
   - [Subnet Registration](#subnet-registration)
 - [Deployment Options](#deployment-options)
-  - [Option 1: Direct Execution (Development)](#option-1-direct-execution-development)
-  - [Option 2: PM2 (Recommended for Production)](#option-2-pm2-recommended-for-production)
-  - [Option 3: Docker (Containerized)](#option-3-docker-containerized)
-  - [Option 4: RunPod (GPU Cloud)](#option-4-runpod-gpu-cloud)
+  - [Option 1: Convenience Scripts (Testing Only)](#option-1-convenience-scripts-testing-only)
+  - [Option 2: Direct Execution (Development)](#option-2-direct-execution-development)
+  - [Option 3: PM2 (Recommended for Production)](#option-3-pm2-recommended-for-production)
+  - [Option 4: Docker (Containerized)](#option-4-docker-containerized)
+  - [Option 5: RunPod (GPU Cloud)](#option-5-runpod-gpu-cloud)
 - [Testing on Testnet](#testing-on-testnet-recommended-first-step)
 - [Monitoring and Verification](#monitoring-and-verification)
 - [Troubleshooting](#troubleshooting)
@@ -328,18 +329,73 @@ Once your validator is working correctly on testnet, contact us to coordinate yo
 
 Choose the deployment method that best fits your infrastructure and expertise.
 
-### Option 1: Direct Execution (Development)
+### Option 1: Convenience Scripts (Testing Only)
 
-**Best for:** Local development, testing, debugging
+**Best for:** Quick testing, local development, debugging
 
 **Pros:**
-- Quick to start
-- Easy to debug
+- Very quick to start
+- Automatic configuration loading from `.env`
+- Wallet verification before starting
+- Graceful shutdown handling
+- Timestamped logs
+- Easy to use
+
+**Cons:**
+- **No automatic restart on crash**
+- **No process monitoring**
+- **Not suitable for production**
+- Manual intervention required for failures
+
+**⚠️ Production Warning:** While these scripts work fine and handle graceful shutdowns properly, **we strongly recommend using PM2 (Option 3) or Docker (Option 4) for production deployments**. PM2 and Docker provide automatic restart on crashes, better monitoring, log rotation, and fault recovery - critical features for production validators.
+
+#### Running with Scripts
+
+```bash
+# Interactive mode (foreground, see logs in terminal)
+./run-validator.sh
+
+# Headless mode (background, logs to file)
+./run-validator.sh --headless
+
+# View headless logs
+tail -f logs/validator_*.log
+
+# Stop the validator
+./stop-validator.sh
+
+# Help
+./run-validator.sh --help
+```
+
+**Features:**
+- Loads `.env` automatically
+- Verifies wallet and hotkey exist
+- Handles SIGTERM and SIGINT gracefully
+- Creates PID file for stop script
+- Timestamped logs in `logs/` directory
+
+#### Accessing the API
+
+Once running, access the API documentation:
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+- **Health Check**: http://localhost:8000/availability
+
+---
+
+### Option 2: Direct Execution (Development)
+
+**Best for:** Development, debugging with full output visibility
+
+**Pros:**
+- Immediate output visibility
+- Easy debugging
 - No additional dependencies
 
 **Cons:**
-- No automatic restart on crash
-- No process monitoring
+- No automatic restart
+- No process management
 - Not suitable for production
 
 #### Running Directly
@@ -355,12 +411,6 @@ uvicorn validator.validator_server:app --host 0.0.0.0 --port 8000
 PYTHONPATH=. uv run uvicorn validator.validator_server:app --host 0.0.0.0 --port 8000
 ```
 
-#### Using the Provided Script
-
-```bash
-./run-validator.sh
-```
-
 #### Accessing the API
 
 Once running, access the API documentation:
@@ -368,7 +418,9 @@ Once running, access the API documentation:
 - **ReDoc**: http://localhost:8000/redoc
 - **Health Check**: http://localhost:8000/availability
 
-### Option 2: PM2 (Recommended for Production)
+---
+
+### Option 3: PM2 (Recommended for Production)
 
 **Best for:** Production deployments on dedicated servers
 
@@ -547,7 +599,9 @@ Replace the PM2 restart with your process management method (e.g., systemd servi
 
 The script provides a solid foundation for implementing auto-updates in any environment.
 
-### Option 3: Docker (Containerized)
+---
+
+### Option 4: Docker (Containerized)
 
 **Best for:** Containerized deployments, Kubernetes, reproducible environments
 
@@ -693,7 +747,9 @@ docker-compose down
 docker-compose restart validator
 ```
 
-### Option 4: RunPod (GPU Cloud)
+---
+
+### Option 5: RunPod (GPU Cloud)
 
 **Best for:** GPU cloud deployments, scalable infrastructure, no hardware management
 

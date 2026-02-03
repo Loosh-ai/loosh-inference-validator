@@ -23,7 +23,13 @@ def load_test_config_yaml(config_path: str = "test_config.yaml") -> Dict[str, An
 
 
 def create_bittensor_test_config(yaml_config: Optional[Dict[str, Any]] = None) -> bt.config:
-    """Create a bittensor config object with test settings."""
+    """
+    Create a bittensor config object with test settings.
+    
+    Note: This function is deprecated. The validator now uses ValidatorConfig
+    and validator_config_to_bittensor_config() for configuration. This function
+    is kept for backward compatibility with test code.
+    """
     if yaml_config is None:
         yaml_config = load_test_config_yaml()
     
@@ -38,6 +44,10 @@ def create_bittensor_test_config(yaml_config: Optional[Dict[str, Any]] = None) -
 
     config.subtensor.network = yaml_config.get('network', 'finney')
     config.subtensor.chain_endpoint = yaml_config.get('chain_endpoint', 'wss://entrypoint-finney.opentensor.ai:443')
+    
+    # Ensure nested subtensor config exists and is set
+    if not hasattr(config.subtensor, 'subtensor'):
+        config.subtensor.subtensor = bt.config()
     config.subtensor.subtensor.network = config.subtensor.network
     config.subtensor.subtensor.chain_endpoint = config.subtensor.chain_endpoint
 

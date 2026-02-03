@@ -341,22 +341,18 @@ class BittensorNode:
 
         # CONFIG REFACTOR [
 
-        # TODO: That is a test config, need refactoring: single config architecture for miner and validator
-
-        yaml_config = load_config_yaml()
+        # Store the original ValidatorConfig
         self.config_orig = self.config
-        self.config = create_bittensor_test_config(yaml_config)
-
-        print(self.config.wallet)
-
-#        if not hasattr(self.config_orig, "wallet"):
-#            self.config_orig.wallet = WalletConfig
-
-        print(self.config_orig.wallet)
-
-        if hasattr(self.config_orig, "wallet"):
-            self.config.wallet.name = self.config_orig.wallet_name
-            self.config.wallet.hotkey = self.config_orig.hotkey_name
+        
+        # Convert ValidatorConfig to bittensor config
+        # This ensures SUBTENSOR_NETWORK and SUBTENSOR_ADDRESS are properly used
+        from validator.config import validator_config_to_bittensor_config
+        self.config = validator_config_to_bittensor_config(self.config_orig)
+        
+        bt.logging.info(f"Network configuration:")
+        bt.logging.info(f"  - Network: {self.config.subtensor.network}")
+        bt.logging.info(f"  - Chain Endpoint: {self.config.subtensor.chain_endpoint}")
+        bt.logging.info(f"  - NetUID: {self.config.netuid}")
 
         config = self.config
 
@@ -365,12 +361,20 @@ class BittensorNode:
         # CREATE SUBTENSOR 
 
         # The subtensor is our connection to the Bittensor blockchain.
-        self.subtensor = LooshSubnetSubtensor(network='local', config=self.config)
+        # Use the configured network and chain endpoint from environment variables
+        bt.logging.info(f"Initializing subtensor with network: {self.config.subtensor.network}")
+        self.subtensor = LooshSubnetSubtensor(
+            network=self.config.subtensor.network, 
+            config=self.config
+        )
         
         # Setup config: This method determines the appropriate network and chain endpoint based on the provided network string or configuration object.
         self.chain_endpoint, self.network = self.subtensor.setup_config(self.config.network, self.config)
-
-        bt.logging.info(f"Subtensor: {self.subtensor}")
+        
+        bt.logging.info(f"Subtensor connected:")
+        bt.logging.info(f"  - Network: {self.network}")
+        bt.logging.info(f"  - Chain Endpoint: {self.chain_endpoint}")
+        bt.logging.info(f"  - Subtensor: {self.subtensor}")
 
         # METAGRAPH
 

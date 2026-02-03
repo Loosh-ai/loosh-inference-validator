@@ -20,7 +20,8 @@ class ValidatorConfig(BaseSettings):
         env_file=("/workspace/.env", ".env"),  # Check RunPod location first, then local
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore"
+        extra="ignore",
+        env_ignore_empty=True  # Ignore empty env files
     )
     
     # Network configuration
@@ -93,6 +94,14 @@ class ValidatorConfig(BaseSettings):
     # API configuration
     api_host: str = Field(default="0.0.0.0", description="API host")
     api_port: int = Field(default=8000, description="API port")
+    
+    # Axon configuration (bittensor node communication)
+    axon_ip: str = Field(default="127.0.0.1", description="Axon IP address")
+    axon_port: int = Field(default=8099, description="Axon port")
+    axon_external_ip: Optional[str] = Field(default=None, description="Axon external IP (if different from internal)")
+    axon_external_port: Optional[int] = Field(default=None, description="Axon external port (if different from internal)")
+    axon_max_workers: int = Field(default=5, description="Maximum worker threads for axon")
+    axon_timeout: int = Field(default=30, description="Axon timeout in seconds")
     
     # LLM configuration
     default_model: str = Field(default="mistralai/Mistral-7B-v0.1", description="Default model")
@@ -222,5 +231,68 @@ def get_validator_config() -> ValidatorConfig:
         )
         logger.error(error_msg)
         raise ValueError(error_msg) from e 
+
+
+def validator_config_to_bittensor_config(validator_config: ValidatorConfig) -> "bittensor.config":
+    """
+    Convert ValidatorConfig to bittensor config object.
+    
+    This ensures the subtensor is initialized with the correct network and chain endpoint
+    from the environment variables (SUBTENSOR_NETWORK and SUBTENSOR_ADDRESS).
+    
+    Args:
+        validator_config: ValidatorConfig instance with loaded environment variables
+        
+    Returns:
+        bittensor.config: Properly configured bittensor config object
+    """
+    import bittensor as bt
+    
+    # Create base bittensor config
+    config = bt.config()
+    
+    # Set basic network configuration
+    config.netuid = validator_config.netuid
+    config.network = validator_config.subtensor_network
+    
+    # Initialize subtensor config
+    config.subtensor = bt.subtensor.config()
+    config.subtensor.network = validator_config.subtensor_network
+    config.subtensor.chain_endpoint = validator_config.subtensor_address
+    
+    # Ensure nested subtensor config exists and is set
+    if not hasattr(config.subtensor, 'subtensor'):
+        config.subtensor.subtensor = bt.config()
+    config.subtensor.subtensor.network = validator_config.subtensor_network
+    config.subtensor.subtensor.chain_endpoint = validator_config.subtensor_address
+    
+    # Set wallet configuration
+    config.wallet = bt.config()
+    config.wallet.name = validator_config.wallet_name
+    config.wallet.hotkey = validator_config.hotkey_name
+    config.wallet.path = '~/.bittensor/wallets/'
+    
+    # Set axon configuration from ValidatorConfig
+    config.axon = bt.axon.config()
+    config.axon.ip = validator_config.axon_ip
+    config.axon.port = validator_config.axon_port
+    config.axon.external_ip = validator_config.axon_external_ip
+    config.axon.external_port = validator_config.axon_external_port
+    config.axon.max_workers = validator_config.axon_max_workers
+    config.axon.timeout = validator_config.axon_timeout
+    
+    # Set dendrite configuration defaults
+    config.dendrite = bt.config()
+    config.dendrite.timeout = 30
+    config.dendrite.max_retry = 2
+    config.dendrite.retry_delay = 0.5
+    
+    # Set logging configuration
+    config.log_level = validator_config.log_level
+    config.log_trace = True
+    config.log_record = True
+    config.log_dir = './logs/'
+    
+    return config
 
 # CONFIG - ValidatorConfig ]
