@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy import create_engine, select, update
@@ -204,4 +204,126 @@ class DatabaseManager:
                 return False
         except Exception as e:
             logger.error(f"Error deleting sybil detection result {record_id}: {e}", exc_info=True)
-            return False 
+            return False
+    
+    def get_miner_ema_scores(
+        self,
+        lookback_hours: int = 24,
+        alpha: float = 0.3
+    ) -> Dict[int, float]:
+        """
+        Calculate EMA (Exponential Moving Average) scores for miners based on emissions from evaluations.
+        
+        The EMA gives more weight to recent performance while still considering historical data.
+        Formula: EMA = alpha * current + (1 - alpha) * previous_EMA
+        
+        Args:
+            lookback_hours: How far back to look for evaluation results (default: 24 hours)
+            alpha: EMA smoothing factor (0-1). Higher values weight recent data more.
+                   Default 0.3 means 30% weight to current, 70% to history.
+        
+        Returns:
+            Dict mapping node_id (int) -> ema_score (float)
+        """
+        cutoff_time = datetime.utcnow() - timedelta(hours=lookback_hours)
+        
+        with self.get_session() as session:
+            # Query evaluation results from lookback period, ordered by time ascending
+            # (oldest first for proper EMA calculation)
+            results = (
+                session.query(EvaluationResult)
+                .filter(EvaluationResult.created_at >= cutoff_time)
+                .order_by(EvaluationResult.created_at.asc())
+                .all()
+            )
+            
+            if not results:
+                logger.info(f"No evaluation results found in last {lookback_hours} hours for EMA calculation")
+                return {}
+            
+            # Track EMA scores per miner (node_id)
+            ema_scores: Dict[int, float] = {}
+            
+            for result in results:
+                if not result.emissions:
+                    continue
+                
+                # Emissions dict has format: {"node_id": emission_value, ...}
+                # Keys are strings in JSON, values are floats
+                for node_id_str, emission_value in result.emissions.items():
+                    try:
+                        node_id = int(node_id_str)
+                        emission = float(emission_value)
+                        
+                        if node_id in ema_scores:
+                            # Update EMA: alpha * current + (1 - alpha) * previous
+                            ema_scores[node_id] = alpha * emission + (1 - alpha) * ema_scores[node_id]
+                        else:
+                            # First observation for this miner - initialize with current value
+                            ema_scores[node_id] = emission
+                            
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Invalid emission data for node {node_id_str}: {e}")
+                        continue
+            
+            logger.info(
+                f"Calculated EMA scores for {len(ema_scores)} miners from "
+                f"{len(results)} evaluations (lookback: {lookback_hours}h, alpha: {alpha})"
+            )
+            
+            return ema_scores
+    
+    def cleanup_old_data(self, retention_hours: int = 48) -> None:
+        """
+        Clean up old challenge, response, and evaluation records.
+        
+        Retains data for retention_hours (default 48h = 2x EMA lookback of 24h).
+        This ensures sufficient history for EMA calculation while preventing
+        unbounded database growth.
+        
+        NOTE: Sybil detection records are NOT cleaned up here - they are managed
+        by SybilSyncTask which deletes records after successful submission to
+        the Challenge API.
+        
+        Args:
+            retention_hours: Hours of history to retain (default: 48)
+        """
+        cutoff_time = datetime.utcnow() - timedelta(hours=retention_hours)
+        
+        with self.get_session() as session:
+            try:
+                # Delete old evaluation results first (depends on challenges)
+                deleted_evaluations = session.query(EvaluationResult).filter(
+                    EvaluationResult.created_at < cutoff_time
+                ).delete(synchronize_session='fetch')
+                
+                # Delete old inference responses (depends on challenges and miners)
+                deleted_responses = session.query(InferenceResponse).filter(
+                    InferenceResponse.created_at < cutoff_time
+                ).delete(synchronize_session='fetch')
+                
+                # Delete old challenges
+                deleted_challenges = session.query(InferenceChallenge).filter(
+                    InferenceChallenge.created_at < cutoff_time
+                ).delete(synchronize_session='fetch')
+                
+                # Delete old miner scores
+                deleted_scores = session.query(MinerScore).filter(
+                    MinerScore.created_at < cutoff_time
+                ).delete(synchronize_session='fetch')
+                
+                session.commit()
+                
+                logger.info(
+                    f"Database cleanup completed: "
+                    f"deleted {deleted_evaluations} evaluations, "
+                    f"{deleted_responses} responses, "
+                    f"{deleted_challenges} challenges, "
+                    f"{deleted_scores} scores "
+                    f"(retention: {retention_hours}h, sybil records managed by SybilSyncTask)"
+                )
+                
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Error during database cleanup: {e}", exc_info=True)
+                raise

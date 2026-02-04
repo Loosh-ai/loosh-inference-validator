@@ -126,3 +126,80 @@ The scaling uses a tanh function with scale factor 0.1 to map score differences 
 
 **Emissions Distribution:** Allocated based on response speed, consensus participation, and individual quality. The highest-scoring response receives additional bonus proportional to score advantage over second-best.
 
+## Weight Setting & On-Chain Emissions
+
+After evaluation, emissions data is stored in the database and used to calculate on-chain weights that determine TAO rewards.
+
+### EMA (Exponential Moving Average) Scoring
+
+The validator uses **EMA scoring** to calculate miner weights, which provides a fair and stable scoring mechanism:
+
+**What is EMA?**
+EMA gives more weight to recent performance while still considering historical data, preventing:
+- Single lucky responses from disproportionately rewarding miners
+- Short-term fluctuations from destabilizing weights
+- Gaming through occasional high-quality responses
+
+**EMA Formula:**
+```
+EMA = α × current_emission + (1 - α) × previous_EMA
+```
+
+Where:
+- **α (alpha)** = 0.3 (default) - smoothing factor
+  - Higher α = more weight to recent performance
+  - Lower α = more weight to historical performance
+- **lookback period** = 24 hours (default) - how far back to consider
+
+**Example:** With α=0.3, a miner's score reflects:
+- 30% from their most recent evaluation
+- 70% carried over from their previous EMA score
+
+This means consistent performers are rewarded over miners who occasionally perform well.
+
+### Weight Setting Process
+
+The validator periodically sets weights on-chain (default: every 30 minutes):
+
+1. **Calculate EMA Scores**: Query all evaluation emissions from the last 24 hours and compute EMA for each miner
+2. **Normalize Weights**: Scale scores so they sum to 1.0 (required by Bittensor)
+3. **Check Rate Limits**: Verify enough blocks have passed since last weight update
+4. **Submit to Chain**: Set weights on-chain using the Bittensor SDK
+
+**Technical Note:** The validator uses the **Bittensor SDK v10+** for weight setting instead of Fiber because:
+- Commit Reveal v3 (CRv3) has been removed from the chain
+- The SDK automatically handles CRv4 commit-reveal at the chain level
+- See: [Bittensor SDK v10 Migration Guide](https://docs.learnbittensor.org/sdk/migration-guide)
+
+### How This Affects Miner Rewards
+
+1. **Every evaluation** generates emissions data stored in the database
+2. **EMA scores** are calculated from emissions over the lookback period (24h default)
+3. **Weights are set** on-chain periodically (30 min default)
+4. **TAO rewards** are distributed based on weights each epoch (~12 seconds)
+
+**For miners, this means:**
+- **Consistency matters**: Steady performance builds a higher EMA over time
+- **Recovery is gradual**: A single bad response won't tank your rewards immediately, but consistently poor performance will lower your EMA
+- **Gaming is difficult**: You can't benefit from occasional bursts of performance
+
+### Database Cleanup
+
+To prevent unbounded database growth while maintaining sufficient history for EMA calculation:
+
+- **Retention period**: 48 hours (2x the EMA lookback window)
+- **Cleaned data**: Challenges, responses, evaluation results, miner scores
+- **Preserved data**: Sybil detection records (managed separately by SybilSyncTask)
+- **Cleanup frequency**: Every 24 hours (configurable)
+
+This ensures the database stays manageable while always having enough historical data for accurate EMA calculations.
+
+### Configuration Options
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `WEIGHTS_INTERVAL_SECONDS` | 1800 (30 min) | How often to set weights on-chain |
+| EMA Alpha | 0.3 | Smoothing factor (higher = more recent weight) |
+| EMA Lookback | 24 hours | Historical period for EMA calculation |
+| DB Retention | 48 hours | How long to keep evaluation data |
+| DB Cleanup Interval | 24 hours | How often to run database cleanup |
