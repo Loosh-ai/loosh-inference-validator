@@ -1,4 +1,5 @@
 validator.db
+validator.pid
 .venv
 .vscode
 .cursor

@@ -327,6 +327,78 @@ async def main_loop():
     metagraph_refresh_task = asyncio.create_task(refresh_metagraph_loop())
     logger.info(f"Metagraph refresh task started (will refresh every {metagraph_refresh_interval}s)")
     
+    # Background task for weight setting
+    weights_task = None
+    
+    async def weights_update_loop():
+        """Run the weights update loop on WEIGHTS_INTERVAL."""
+        from validator.evaluation.set_weights import set_weights
+        
+        logger.info(f"Starting weights update loop (interval: {config.weights_interval})")
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        
+        # Wait for initial period before first weight setting
+        # This allows time for some evaluations to complete
+        initial_delay = min(config.weights_interval.total_seconds(), 300)  # Max 5 min initial delay
+        logger.info(f"Weights update loop will start after {initial_delay}s initial delay")
+        await asyncio.sleep(initial_delay)
+        
+        while True:
+            try:
+                logger.info("Running weight setting...")
+                await set_weights(db_manager)
+                consecutive_failures = 0
+                logger.info(f"Weights updated successfully, sleeping for {config.weights_interval}")
+                await asyncio.sleep(config.weights_interval.total_seconds())
+            except asyncio.CancelledError:
+                logger.info("Weights update loop cancelled")
+                break
+            except Exception as e:
+                consecutive_failures += 1
+                logger.error(
+                    f"Error in weights update loop (attempt {consecutive_failures}/{max_consecutive_failures}): {e}",
+                    exc_info=True
+                )
+                
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.error("Too many consecutive failures in weights update loop, waiting longer before retry")
+                    await asyncio.sleep(config.weights_interval.total_seconds() * 2)
+                    consecutive_failures = 0
+                else:
+                    # Wait normal interval before retry
+                    await asyncio.sleep(config.weights_interval.total_seconds())
+    
+    weights_task = asyncio.create_task(weights_update_loop())
+    logger.info("Weights update task started")
+    
+    # Background task for database cleanup
+    cleanup_task = None
+    cleanup_interval_hours = 24  # Run once per day
+    retention_hours = 48  # Keep 2x the EMA lookback (24h) for safety
+    
+    async def cleanup_loop():
+        """Run periodic database cleanup to prevent unbounded growth."""
+        logger.info(f"Starting database cleanup loop (interval: {cleanup_interval_hours}h, retention: {retention_hours}h)")
+        
+        while True:
+            try:
+                # Wait for cleanup interval
+                await asyncio.sleep(cleanup_interval_hours * 3600)
+                logger.info("Running periodic database cleanup...")
+                db_manager.cleanup_old_data(retention_hours=retention_hours)
+                logger.info("Database cleanup completed successfully")
+            except asyncio.CancelledError:
+                logger.info("Database cleanup loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in cleanup loop: {e}", exc_info=True)
+                # Continue running even if cleanup fails
+                await asyncio.sleep(3600)  # Wait 1 hour before retry
+    
+    cleanup_task = asyncio.create_task(cleanup_loop())
+    logger.info("Database cleanup task started")
+    
     try:
         # Create httpx client for challenge sending
         pool_size = max(100, config.max_concurrent_availability_checks * 2)
@@ -695,6 +767,26 @@ async def main_loop():
                 pass
             except Exception as e:
                 logger.warning(f"Error stopping metagraph refresh task: {e}")
+        
+        if weights_task:
+            logger.info("Shutting down weights update task...")
+            try:
+                weights_task.cancel()
+                await weights_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error stopping weights update task: {e}")
+        
+        if cleanup_task:
+            logger.info("Shutting down database cleanup task...")
+            try:
+                cleanup_task.cancel()
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error stopping cleanup task: {e}")
 
 def run_main_loop():
     try:

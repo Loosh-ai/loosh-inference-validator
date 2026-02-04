@@ -819,6 +819,42 @@ The evaluation process includes:
 - **Narrative Generation**: LLM-generated summaries of the evaluation process
 - **Emissions Calculation**: Reward distribution based on speed, consensus participation, and quality
 
+## Weight Setting & On-Chain Rewards
+
+The validator periodically sets weights on-chain to determine miner TAO rewards. This process uses EMA (Exponential Moving Average) scoring for fair and stable reward distribution.
+
+### EMA Scoring
+
+Instead of using instantaneous scores, the validator calculates **EMA scores** from evaluation emissions:
+
+```
+EMA = α × current_emission + (1 - α) × previous_EMA
+```
+
+With default α=0.3 and a 24-hour lookback period, this means:
+- **Consistent performers** are rewarded over miners who occasionally perform well
+- **A single bad response** won't tank your rewards immediately
+- **Gaming is difficult** - you can't benefit from occasional bursts of performance
+
+### Weight Setting Process
+
+1. **Background Task**: Runs every 30 minutes (configurable via `WEIGHTS_INTERVAL_SECONDS`)
+2. **EMA Calculation**: Queries emissions from the last 24 hours and computes EMA per miner
+3. **Normalization**: Weights are scaled to sum to 1.0 (Bittensor requirement)
+4. **Chain Submission**: Weights are submitted using the Bittensor SDK v10+
+
+**Technical Note:** The validator uses the **Bittensor SDK** (not Fiber) for weight setting because CRv3 has been removed from the chain. The SDK automatically handles CRv4 commit-reveal at the chain level.
+
+### Database Cleanup
+
+To prevent unbounded growth while maintaining EMA calculation accuracy:
+- **Retention**: 48 hours (2x the EMA lookback window)
+- **Cleanup Frequency**: Every 24 hours
+- **Cleaned Data**: Challenges, responses, evaluations, scores
+- **Preserved**: Sybil detection records (managed by SybilSyncTask)
+
+For detailed information about the evaluation and scoring process, see [EVALUATION_PROCESS.md](docs/EVALUATION_PROCESS.md).
+
 ## Database
 
 The validator uses SQLite by default to store:

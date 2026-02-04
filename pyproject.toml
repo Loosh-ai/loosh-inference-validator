@@ -40,7 +40,11 @@ dependencies = [
     "cryptography>=43.0.0,<43.1.0",
     "redis>=5.0.0",
     "huggingface-hub>=0.20.0",
-    "fiber[full] @ git+https://github.com/chutesai/fiber.git@a41ab890708757140a3cf4aae8e5af57a8b03159",
+    "fiber[full] @ git+https://github.com/chutesai/fiber.git",
+    # Bittensor SDK for weight setting (CRv4 support)
+    # Fiber uses deprecated CRv3 via bittensor-commit-reveal, but CRv3 is removed from chain
+    # SDK v10+ handles CRv4 automatically via commit_timelocked_weights_extrinsic
+    "bittensor>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -79,3 +83,8 @@ ignore = []
 cache-dir = ".uv-cache"
 link-mode = "copy"
 
+# Override Fiber's pinned async-substrate-interface==1.1.1 to allow bittensor SDK compatibility
+# Bittensor SDK v10+ requires async-substrate-interface>=1.5.15
+override-dependencies = [
+    "async-substrate-interface>=1.5.15",
+]
