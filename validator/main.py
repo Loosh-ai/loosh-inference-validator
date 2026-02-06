@@ -194,7 +194,10 @@ async def main_loop():
     # Query Fiber chain for registered nodes
     logger.info(f"Querying Fiber chain for registered nodes (netuid={config.netuid}, network={config.subtensor_network})")
     try:
-        substrate = get_substrate(subtensor_network=config.subtensor_network)
+        substrate = get_substrate(
+            subtensor_network=config.subtensor_network,
+            subtensor_address=config.subtensor_address
+        )
         nodes = get_nodes_for_netuid(substrate=substrate, netuid=config.netuid)
         logger.info(f"Found {len(nodes)} registered nodes on chain")
         if len(nodes) == 0:
@@ -307,7 +310,10 @@ async def main_loop():
                 logger.info(f"Refreshing metagraph (netuid={config.netuid}, network={config.subtensor_network})")
                 
                 try:
-                    refresh_substrate = get_substrate(subtensor_network=config.subtensor_network)
+                    refresh_substrate = get_substrate(
+                        subtensor_network=config.subtensor_network,
+                        subtensor_address=config.subtensor_address
+                    )
                     refreshed_nodes = get_nodes_for_netuid(substrate=refresh_substrate, netuid=config.netuid)
                     
                     # Update availability worker with new node list
@@ -331,26 +337,29 @@ async def main_loop():
     weights_task = None
     
     async def weights_update_loop():
-        """Run the weights update loop on WEIGHTS_INTERVAL."""
-        from validator.evaluation.set_weights import set_weights
+        """Run the weights update loop on WEIGHTS_INTERVAL_SECONDS (hard-coded for network consistency)."""
+        from validator.evaluation.set_weights import set_weights, WEIGHTS_INTERVAL_SECONDS
         
-        logger.info(f"Starting weights update loop (interval: {config.weights_interval})")
+        logger.info(f"Starting weights update loop (interval: {WEIGHTS_INTERVAL_SECONDS}s = {WEIGHTS_INTERVAL_SECONDS/60:.1f}min)")
         consecutive_failures = 0
         max_consecutive_failures = 3
         
         # Wait for initial period before first weight setting
         # This allows time for some evaluations to complete
-        initial_delay = min(config.weights_interval.total_seconds(), 300)  # Max 5 min initial delay
+        initial_delay = min(WEIGHTS_INTERVAL_SECONDS, 300)  # Max 5 min initial delay
         logger.info(f"Weights update loop will start after {initial_delay}s initial delay")
         await asyncio.sleep(initial_delay)
         
         while True:
             try:
                 logger.info("Running weight setting...")
-                await set_weights(db_manager)
+                await set_weights(
+                    db_manager=db_manager,
+                    validator_list_fetcher=validator_list_fetcher
+                )
                 consecutive_failures = 0
-                logger.info(f"Weights updated successfully, sleeping for {config.weights_interval}")
-                await asyncio.sleep(config.weights_interval.total_seconds())
+                logger.info(f"Weights updated successfully, sleeping for {WEIGHTS_INTERVAL_SECONDS}s")
+                await asyncio.sleep(WEIGHTS_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 logger.info("Weights update loop cancelled")
                 break
@@ -363,11 +372,11 @@ async def main_loop():
                 
                 if consecutive_failures >= max_consecutive_failures:
                     logger.error("Too many consecutive failures in weights update loop, waiting longer before retry")
-                    await asyncio.sleep(config.weights_interval.total_seconds() * 2)
+                    await asyncio.sleep(WEIGHTS_INTERVAL_SECONDS * 2)
                     consecutive_failures = 0
                 else:
                     # Wait normal interval before retry
-                    await asyncio.sleep(config.weights_interval.total_seconds())
+                    await asyncio.sleep(WEIGHTS_INTERVAL_SECONDS)
     
     weights_task = asyncio.create_task(weights_update_loop())
     logger.info("Weights update task started")
