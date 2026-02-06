@@ -78,12 +78,11 @@ class ValidatorConfig(BaseSettings):
         le=1.0
     )
     
-    # Weights update interval (in seconds)
-    weights_interval_seconds: int = Field(default=1800, description="Weights update interval (seconds)")
-    
-    @property
-    def weights_interval(self) -> timedelta:
-        return timedelta(seconds=self.weights_interval_seconds)
+    # Weight setting parameters are hard-coded in set_weights.py to ensure
+    # consistent behavior across all validators:
+    # - WEIGHTS_INTERVAL_SECONDS = 4320 (72 minutes)
+    # - WEIGHT_FRESHNESS_HOURS = 3
+    # - WEIGHT_MIN_SERVING_NODES = 1
     
     # Metagraph refresh interval (in seconds) - how often to refresh node list from chain
     metagraph_refresh_interval_seconds: int = Field(

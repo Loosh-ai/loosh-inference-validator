@@ -273,6 +273,32 @@ class DatabaseManager:
             
             return ema_scores
     
+    def get_miner_last_success_times(self) -> Dict[int, datetime]:
+        """
+        Get the last successful response timestamp for each miner.
+        
+        Used by weight setting to apply a freshness gate - miners without
+        recent successful responses should not receive weight.
+        
+        Returns:
+            Dict mapping node_id (int) -> last_success (datetime)
+        """
+        with self.get_session() as session:
+            miners = (
+                session.query(Miner)
+                .filter(Miner.last_success.isnot(None))
+                .all()
+            )
+            
+            result = {
+                miner.node_id: miner.last_success
+                for miner in miners
+                if miner.last_success is not None
+            }
+            
+            logger.debug(f"Retrieved last_success times for {len(result)} miners")
+            return result
+    
     def cleanup_old_data(self, retention_hours: int = 48) -> None:
         """
         Clean up old challenge, response, and evaluation records.
