@@ -18,11 +18,20 @@ from validator.internal_config import (
     ENABLE_NARRATIVE_GENERATION,
     ENABLE_HEATMAP_GENERATION,
     ENABLE_QUALITY_PLOTS,
+    EMBEDDING_FP16_ENABLED,
+    EMBEDDING_SENTENCE_LEVEL,
+    QUALITY_SENTENCE_RELEVANCE_WEIGHT,
+    QUALITY_MIN_SENTENCE_WORDS,
+    QUALITY_COHERENCE_EMBEDDING_CHAIN,
+    QUALITY_PROMPT_COVERAGE_ENABLED,
+    QUALITY_COVERAGE_THRESHOLD,
+    QUALITY_COMPLEXITY_ENABLED,
 )
 from validator.network.fiber_client import ValidatorFiberClient
 
 # Import from local evaluation modules
 from .Evaluation.consensus_engine import ConsensusEngine, ConsensusConfig, ConsensusResult
+from .Evaluation.quality_scorer import EvaluationQualityScorer
 from .Recording.consensus_narrative_generator import ConsensusNarrativeGenerator, LLMConfig
 from .Recording.similarity_heatmap import generate_semantic_similarity_heatmap
 from .sybil_detection import SybilDetector, SybilDetectionResult
@@ -42,7 +51,25 @@ class InferenceValidator:
         
         # Initialize embedding model from internal config (network-consistent, not env-configurable)
         self.embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
-        logger.info(f"Loaded sentence transformer model: {SENTENCE_TRANSFORMER_MODEL}")
+        if EMBEDDING_FP16_ENABLED:
+            try:
+                self.embedding_model.half()
+                logger.info(f"Loaded sentence transformer model: {SENTENCE_TRANSFORMER_MODEL} (FP16 enabled)")
+            except Exception as e:
+                logger.warning(f"FP16 conversion failed ({e}), using FP32")
+        else:
+            logger.info(f"Loaded sentence transformer model: {SENTENCE_TRANSFORMER_MODEL}")
+        
+        # Initialize enhanced quality scorer (Tier 4)
+        self.quality_scorer = EvaluationQualityScorer(
+            sentence_relevance_weight=QUALITY_SENTENCE_RELEVANCE_WEIGHT,
+            min_sentence_words=QUALITY_MIN_SENTENCE_WORDS,
+            coverage_threshold=QUALITY_COVERAGE_THRESHOLD,
+            coherence_embedding_chain=QUALITY_COHERENCE_EMBEDDING_CHAIN,
+            complexity_enabled=QUALITY_COMPLEXITY_ENABLED,
+            coverage_enabled=QUALITY_PROMPT_COVERAGE_ENABLED,
+        )
+        logger.info("Enhanced quality scorer (Tier 4) initialized")
         
         # Initialize narrative generator with LLM config (only if enabled)
         # IMPORTANT: The API endpoint must implement OpenAI Chat Completions API format
@@ -206,13 +233,18 @@ class InferenceValidator:
             
             logger.debug(f"[EVALUATION] Generated embeddings: shape={embeddings.shape}")
             
-            # Create consensus engine with miner IDs and prompt embedding (for quality assessment)
+            # Create consensus engine with miner IDs, prompt embedding, and
+            # the enhanced quality scorer (Tier 4) for embedding-aware metrics.
+            # The embed_fn lambda wraps SentenceTransformer.encode so the scorer
+            # can embed arbitrary texts (sentences, prompt components) on demand.
             consensus_engine = ConsensusEngine(
                 original_prompt=prompt,
                 responses=response_texts,
                 embeddings=embeddings,
                 miner_ids=valid_miner_ids,
-                prompt_embedding=prompt_embedding  # For semantic quality assessment
+                prompt_embedding=prompt_embedding,  # For semantic quality assessment
+                quality_scorer=self.quality_scorer if EMBEDDING_SENTENCE_LEVEL else None,
+                embed_fn=lambda texts: self.embedding_model.encode(texts, convert_to_numpy=True),
             )
             
             # Configure consensus evaluation

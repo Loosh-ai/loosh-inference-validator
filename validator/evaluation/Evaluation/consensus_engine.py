@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Literal
+from typing import List, Optional, Dict, Literal, Callable
 from dataclasses import dataclass
 from datetime import datetime
 import numpy as np
@@ -15,6 +15,8 @@ try:
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
+
+from .quality_scorer import EvaluationQualityScorer, QualityBreakdown
 
 
 @dataclass
@@ -68,6 +70,7 @@ class ConsensusResult:
     quality_plot_path: Optional[str] = None
     consensus_narrative: Optional[str] = None
     miner_scores: Optional[Dict[str, float]] = None
+    quality_breakdowns: Optional[List[QualityBreakdown]] = None
 
 
 
@@ -80,7 +83,9 @@ class ConsensusEngine:
         confidences: Optional[List[float]] = None,
         polarities: Optional[List[Literal["affirmative", "negative"]]] = None,
         miner_ids: Optional[List[int]] = None,
-        prompt_embedding: Optional[np.ndarray] = None
+        prompt_embedding: Optional[np.ndarray] = None,
+        quality_scorer: Optional[EvaluationQualityScorer] = None,
+        embed_fn: Optional[Callable] = None,
     ):
         self.original_prompt = original_prompt
         self.all_responses = responses
@@ -98,8 +103,16 @@ class ConsensusEngine:
         self.labels = self.all_labels.copy()
         self.prompt_embedding = prompt_embedding
         
+        # Enhanced quality scorer (Tier 4) — when provided, replaces the
+        # heuristic-only scoring in _assess_semantic_quality with
+        # embedding-aware multi-granularity metrics.
+        self.quality_scorer = quality_scorer
+        self.embed_fn = embed_fn
+        
         # Store quality scores for later use
         self.quality_scores = None
+        # Per-response quality breakdowns (populated by enhanced scorer)
+        self.quality_breakdowns: Optional[List[QualityBreakdown]] = None
 
     def _compute_pairwise_similarity(self) -> np.ndarray:
         return cosine_similarity(self.embeddings)
@@ -423,12 +436,54 @@ class ConsensusEngine:
         
         This is CRITICAL for preventing garbage consensus attacks.
         
-        Quality factors:
+        When an :class:`EvaluationQualityScorer` is attached (Tier 4), this
+        delegates to the embedding-aware scorer which computes multi-granularity
+        relevance, embedding-chain coherence, prompt coverage, and reasoning
+        complexity.  Otherwise, the original heuristic metrics are used as a
+        fallback.
+        
+        Quality factors (heuristic fallback):
         1. Prompt relevance: Does response address the question?
         2. Information density: Meaningful content vs filler words
         3. Specificity: Concrete details vs vague statements
         4. Coherence: Logical structure and completeness
         """
+        # ── Enhanced scorer path (Tier 4) ────────────────────────────
+        if (
+            self.quality_scorer is not None
+            and self.embed_fn is not None
+            and self.prompt_embedding is not None
+        ):
+            try:
+                quality_weights = {
+                    "relevance": config.quality_prompt_relevance_weight,
+                    "coherence": config.quality_coherence_weight,
+                    "coverage": config.quality_density_weight,   # reuses density slot
+                    "complexity": config.quality_specificity_weight,  # reuses specificity slot
+                    "density": config.quality_density_weight,
+                    "specificity": config.quality_specificity_weight,
+                }
+                quality_array, breakdowns = self.quality_scorer.score_batch(
+                    responses=self.responses,
+                    response_embeddings=self.embeddings,
+                    prompt=self.original_prompt,
+                    prompt_embedding=self.prompt_embedding,
+                    embed_fn=self.embed_fn,
+                    quality_weights=quality_weights,
+                )
+                self.quality_breakdowns = breakdowns
+                logger.info(
+                    f"[QUALITY] Enhanced scorer (Tier 4): "
+                    f"mean={quality_array.mean():.3f}, min={quality_array.min():.3f}, "
+                    f"max={quality_array.max():.3f}, threshold={config.quality_threshold:.3f}"
+                )
+                return quality_array
+            except Exception as e:
+                logger.warning(
+                    f"[QUALITY] Enhanced scorer failed ({e}); falling back to heuristic scoring"
+                )
+
+        # ── Heuristic fallback ───────────────────────────────────────
         quality_scores = []
         
         for i, response in enumerate(self.responses):
@@ -465,7 +520,7 @@ class ConsensusEngine:
             min_quality = np.min(quality_array)
             max_quality = np.max(quality_array)
             logger.debug(
-                f"[QUALITY] Semantic assessment: avg={avg_quality:.3f}, "
+                f"[QUALITY] Heuristic assessment: avg={avg_quality:.3f}, "
                 f"min={min_quality:.3f}, max={max_quality:.3f}, "
                 f"threshold={config.quality_threshold:.3f}"
             )
@@ -991,5 +1046,6 @@ class ConsensusEngine:
             consensus_achieved=consensus,
             quality_plot_path=quality_path,
             consensus_narrative=None,
-            miner_scores=individual_scores
+            miner_scores=individual_scores,
+            quality_breakdowns=self.quality_breakdowns,
         )

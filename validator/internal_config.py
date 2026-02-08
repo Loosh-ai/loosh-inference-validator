@@ -111,8 +111,11 @@ class InternalConfig:
     # Embedding & Evaluation Parameters
     # =========================================================================
     
-    # Sentence Transformer model for generating embeddings during evaluation
-    SENTENCE_TRANSFORMER_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Sentence Transformer model for generating embeddings during evaluation.
+    # all-mpnet-base-v2 (768-dim) provides substantially better semantic
+    # representation than all-MiniLM-L6-v2 (384-dim) at a modest speed
+    # tradeoff (~3x slower, but still <100ms per batch on GPU).
+    SENTENCE_TRANSFORMER_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
     
     # Enable narrative generation using LLM after consensus evaluation
     # When disabled, evaluation and heatmap generation still run, but narrative is skipped.
@@ -173,6 +176,45 @@ class InternalConfig:
     
     # Enable automatic key rotation for Fiber symmetric keys
     FIBER_ENABLE_KEY_ROTATION: bool = True
+    
+    # =========================================================================
+    # Evaluation Quality Enhancement Parameters (Tier 4)
+    # =========================================================================
+    
+    # Enable FP16 (half-precision) for embedding model inference.
+    # Reduces memory usage and speeds up inference on GPU with minimal quality loss.
+    EMBEDDING_FP16_ENABLED: bool = True
+    
+    # Enable sentence-level embedding for granular quality assessment.
+    # Responses are split into sentences and each is embedded separately
+    # for coherence and completeness scoring.
+    EMBEDDING_SENTENCE_LEVEL: bool = True
+    
+    # ---- Multi-Granularity Relevance ----
+    # Blend factor between sentence-level and full-response relevance.
+    # 0.0 = full-response only, 1.0 = sentence-level only.
+    QUALITY_SENTENCE_RELEVANCE_WEIGHT: float = 0.5
+    
+    # Minimum sentence length (words) to consider for sentence-level scoring.
+    QUALITY_MIN_SENTENCE_WORDS: int = 3
+    
+    # ---- Embedding-Chain Coherence ----
+    # When True, coherence is measured as average cosine similarity between
+    # consecutive sentence embeddings (topic flow consistency).
+    QUALITY_COHERENCE_EMBEDDING_CHAIN: bool = True
+    
+    # ---- Prompt Coverage Completeness ----
+    # When True, prompts are decomposed into semantic components and
+    # responses are scored on how many components they address.
+    QUALITY_PROMPT_COVERAGE_ENABLED: bool = True
+    
+    # Minimum cosine similarity for a prompt component to be "covered".
+    QUALITY_COVERAGE_THRESHOLD: float = 0.45
+    
+    # ---- Reasoning Complexity ----
+    # When True, responses are scored on reasoning depth (causal markers,
+    # argument structure, multi-step logic).
+    QUALITY_COMPLEXITY_ENABLED: bool = True
     
     # =========================================================================
     # Sybil Penalty Parameters
@@ -270,6 +312,16 @@ MAX_CONCURRENT_AVAILABILITY_CHECKS = INTERNAL_CONFIG.MAX_CONCURRENT_AVAILABILITY
 FIBER_KEY_TTL_SECONDS = INTERNAL_CONFIG.FIBER_KEY_TTL_SECONDS
 FIBER_HANDSHAKE_TIMEOUT_SECONDS = INTERNAL_CONFIG.FIBER_HANDSHAKE_TIMEOUT_SECONDS
 FIBER_ENABLE_KEY_ROTATION = INTERNAL_CONFIG.FIBER_ENABLE_KEY_ROTATION
+
+# Evaluation Quality Enhancement (Tier 4)
+EMBEDDING_FP16_ENABLED = INTERNAL_CONFIG.EMBEDDING_FP16_ENABLED
+EMBEDDING_SENTENCE_LEVEL = INTERNAL_CONFIG.EMBEDDING_SENTENCE_LEVEL
+QUALITY_SENTENCE_RELEVANCE_WEIGHT = INTERNAL_CONFIG.QUALITY_SENTENCE_RELEVANCE_WEIGHT
+QUALITY_MIN_SENTENCE_WORDS = INTERNAL_CONFIG.QUALITY_MIN_SENTENCE_WORDS
+QUALITY_COHERENCE_EMBEDDING_CHAIN = INTERNAL_CONFIG.QUALITY_COHERENCE_EMBEDDING_CHAIN
+QUALITY_PROMPT_COVERAGE_ENABLED = INTERNAL_CONFIG.QUALITY_PROMPT_COVERAGE_ENABLED
+QUALITY_COVERAGE_THRESHOLD = INTERNAL_CONFIG.QUALITY_COVERAGE_THRESHOLD
+QUALITY_COMPLEXITY_ENABLED = INTERNAL_CONFIG.QUALITY_COMPLEXITY_ENABLED
 
 # Sybil Penalty
 SYBIL_PENALTY_ENABLED = INTERNAL_CONFIG.SYBIL_PENALTY_ENABLED
