@@ -104,16 +104,71 @@ class InferenceValidator:
                 logger.warning(f"[EVALUATION] No responses provided for challenge {challenge_id}")
                 return 0.0, None, None, {}
             
-            if num_responses == 1:
-                logger.info(f"[EVALUATION] Only 1 response received - using simple scoring (no consensus evaluation possible)")
+            # Filter out test mode responses BEFORE evaluation
+            # Test mode responses should receive zero emissions
+            valid_responses = []
+            valid_miner_ids = []
+            test_mode_miners = []
+            
+            for i, response in enumerate(responses):
+                # Check if response indicates test mode
+                response_text = response.response_text.strip()
+                if response_text.startswith("[TEST MODE]"):
+                    miner_id = miner_ids[i] if miner_ids and i < len(miner_ids) else i
+                    test_mode_miners.append(miner_id)
+                    logger.warning(
+                        f"[EVALUATION] Miner {miner_id} returned test mode response - "
+                        f"will receive ZERO emissions. Response: {response_text[:100]}"
+                    )
+                else:
+                    valid_responses.append(response)
+                    if miner_ids and i < len(miner_ids):
+                        valid_miner_ids.append(miner_ids[i])
+            
+            # If all responses are test mode, return zero emissions for all
+            if not valid_responses:
+                logger.warning(
+                    f"[EVALUATION] All {num_responses} responses were test mode - "
+                    f"no valid responses to evaluate"
+                )
+                zero_emissions = {str(mid): 0.0 for mid in test_mode_miners}
+                
+                # Log evaluation result with zero emissions
+                self.db_manager.log_evaluation_result(
+                    challenge_id=challenge_id,
+                    consensus_score=0.0,
+                    heatmap_path=None,
+                    narrative="All responses were test mode - no evaluation performed",
+                    emissions=zero_emissions
+                )
+                
+                return 0.0, None, None, zero_emissions
+            
+            # If we filtered out test mode responses, log it
+            if test_mode_miners:
+                logger.info(
+                    f"[EVALUATION] Filtered out {len(test_mode_miners)} test mode responses. "
+                    f"Evaluating {len(valid_responses)} valid responses. "
+                    f"Test mode miners: {test_mode_miners}"
+                )
+            
+            # Continue evaluation with only valid responses
+            num_valid = len(valid_responses)
+            
+            if num_valid == 1:
+                logger.info(f"[EVALUATION] Only 1 valid response received - using simple scoring (no consensus evaluation possible)")
                 # For single response, return a default score and create simple emissions
-                single_response = responses[0]
-                emissions = {str(miner_ids[0] if miner_ids else 0): 1.0} if miner_ids else {"0": 1.0}
+                single_response = valid_responses[0]
+                emissions = {str(valid_miner_ids[0] if valid_miner_ids else 0): 1.0} if valid_miner_ids else {"0": 1.0}
+                
+                # Add zero emissions for test mode miners
+                for test_miner_id in test_mode_miners:
+                    emissions[str(test_miner_id)] = 0.0
                 
                 # Log simple evaluation result
                 self.db_manager.log_evaluation_result(
                     challenge_id=challenge_id,
-                    consensus_score=1.0,  # Perfect score for single response
+                    consensus_score=1.0,  # Perfect score for single valid response
                     heatmap_path=None,
                     narrative=None,
                     emissions=emissions
@@ -122,18 +177,22 @@ class InferenceValidator:
                 logger.info(f"[EVALUATION] Single response evaluation complete - score: 1.0, emissions: {emissions}")
                 return 1.0, None, None, emissions
             
-            # Extract response texts and calculate embeddings
-            response_texts = [r.response_text for r in responses]
+            # Extract response texts and calculate embeddings (only for valid responses)
+            response_texts = [r.response_text for r in valid_responses]
             embeddings = self.embedding_model.encode(response_texts, convert_to_numpy=True)
+            
+            # CRITICAL: Generate prompt embedding for semantic quality assessment
+            prompt_embedding = self.embedding_model.encode([prompt], convert_to_numpy=True)[0]
             
             logger.debug(f"[EVALUATION] Generated embeddings: shape={embeddings.shape}")
             
-            # Create consensus engine with miner IDs for labels
+            # Create consensus engine with miner IDs and prompt embedding (for quality assessment)
             consensus_engine = ConsensusEngine(
                 original_prompt=prompt,
                 responses=response_texts,
                 embeddings=embeddings,
-                miner_ids=miner_ids
+                miner_ids=valid_miner_ids,
+                prompt_embedding=prompt_embedding  # For semantic quality assessment
             )
             
             # Configure consensus evaluation
@@ -143,20 +202,20 @@ class InferenceValidator:
             min_responses_for_outlier_detection = 3
             min_responses_for_clustering = 2
             
-            use_outlier_detection = num_responses >= min_responses_for_outlier_detection
-            use_clustering = num_responses >= min_responses_for_clustering
+            use_outlier_detection = num_valid >= min_responses_for_outlier_detection
+            use_clustering = num_valid >= min_responses_for_clustering
             # Check config option and minimum response count
-            generate_heatmap = self.config.enable_heatmap_generation and num_responses >= 2  # Need at least 2 for meaningful heatmap
+            generate_heatmap = self.config.enable_heatmap_generation and num_valid >= 2  # Need at least 2 for meaningful heatmap
             
             if not use_outlier_detection:
-                logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_responses})")
+                logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_valid})")
             if not use_clustering:
-                logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_responses})")
+                logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_valid})")
             if not generate_heatmap:
                 if not self.config.enable_heatmap_generation:
                     logger.debug(f"[EVALUATION] Heatmap generation disabled by configuration")
                 else:
-                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_responses})")
+                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_valid})")
             
             # Use challenge_id (UUID) for heatmap filename, but include correlation_id in image title
             # challenge_id should be a UUID string, sanitize it for filename
@@ -169,15 +228,31 @@ class InferenceValidator:
                 use_clustering=use_clustering,
                 use_weighted_scoring=True,
                 use_outlier_detection=use_outlier_detection,
-                apply_quality_filter=True,
-                quality_sensitivity=0.7,
+                apply_quality_filter=False,  # Disable legacy word-length filter
+                quality_sensitivity=0.7,  # Deprecated - kept for backward compat
                 generate_heatmap=generate_heatmap,
                 generate_quality_plot=self.config.enable_quality_plots,
                 heatmap_path=f"temp/heatmap_{heatmap_id_safe}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png",
                 lambda_factor=1.0,
                 threshold_min=0.7,
                 challenge_id=str(challenge_id),  # Pass challenge_id (UUID) for image title
-                correlation_id=correlation_id  # Pass correlation_id for image title
+                correlation_id=correlation_id,  # Pass correlation_id for image title
+                # NEW: Semantic quality assessment (CRITICAL for garbage consensus prevention)
+                enable_semantic_quality=True,  # Enable semantic quality assessment
+                quality_threshold=0.35,  # Minimum quality score to participate in consensus
+                quality_prompt_relevance_weight=0.4,
+                quality_density_weight=0.2,
+                quality_specificity_weight=0.2,
+                quality_coherence_weight=0.2,
+                # Smart outlier detection
+                enable_smart_outlier_detection=True,
+                outlier_quality_delta=0.15,
+                # Diversity bonus
+                enable_diversity_bonus=True,
+                max_diversity_bonus=0.15,
+                # Garbage detection alerts
+                enable_garbage_alerts=True,
+                garbage_cluster_threshold=0.4
             )
             
             # Compute similarity matrix BEFORE consensus evaluation (before filtering)
@@ -187,22 +262,22 @@ class InferenceValidator:
             # Evaluate consensus (this may filter responses)
             result = consensus_engine.evaluate_consensus(config)
             
-            # Perform sybil detection analysis on ALL responses (before filtering)
-            # Only run sybil detection if we have at least 2 responses
+            # Perform sybil detection analysis on valid responses only
+            # Only run sybil detection if we have at least 2 valid responses
             sybil_result = None
-            if num_responses >= 2:
+            if num_valid >= 2:
                 try:
                     sybil_result = self.sybil_detector.detect_sybil_patterns(
                         similarity_matrix=original_similarity_matrix,
-                        responses=responses,
-                        miner_ids=miner_ids if miner_ids else list(range(len(responses))),
+                        responses=valid_responses,
+                        miner_ids=valid_miner_ids if valid_miner_ids else list(range(len(valid_responses))),
                         challenge_id=challenge_id
                     )
                 except Exception as e:
                     logger.warning(f"[EVALUATION] Sybil detection failed: {e}. Continuing without sybil detection.")
                     sybil_result = None
             else:
-                logger.debug(f"[EVALUATION] Sybil detection skipped (need 2+ responses, got {num_responses})")
+                logger.debug(f"[EVALUATION] Sybil detection skipped (need 2+ responses, got {num_valid})")
             
             # Log sybil detection results for analysis
             if sybil_result and (sybil_result.suspicious_pairs or sybil_result.suspicious_groups):
@@ -267,8 +342,14 @@ class InferenceValidator:
             # Store individual scores before calculating emissions (they get overwritten)
             individual_scores = result.miner_scores if result.miner_scores else {}
             
-            # Calculate emissions
-            emissions = self._calculate_emissions(responses, result, miner_ids, individual_scores)
+            # Calculate emissions for valid responses
+            emissions = self._calculate_emissions(valid_responses, result, valid_miner_ids, individual_scores)
+            
+            # Add zero emissions for test mode miners
+            for test_miner_id in test_mode_miners:
+                emissions[str(test_miner_id)] = 0.0
+                logger.info(f"[EVALUATION] Miner {test_miner_id} test mode - emission set to 0.0")
+            
             result.miner_scores = emissions
             
             # Convert numpy float32/float64 values to Python float for JSON serialization

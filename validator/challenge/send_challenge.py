@@ -13,6 +13,7 @@ from validator.challenge.challenge_types import (
 from validator.db.operations import DatabaseManager
 from validator.challenge_api.models import Challenge
 from validator.config import ValidatorConfig
+from validator.timing import PipelineTiming, PipelineStages
 
 # Global Fiber client for miner communication
 _miner_fiber_client = None

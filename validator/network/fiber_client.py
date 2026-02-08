@@ -46,6 +46,10 @@ class ValidatorFiberClient:
         self.key_ttl_seconds = key_ttl_seconds
         self.handshake_timeout_seconds = handshake_timeout_seconds
         
+        # Safety margin: refresh keys 60 seconds before server-side expiration
+        # This prevents race conditions where client thinks key is valid but server has expired it
+        self.key_refresh_margin_seconds = 60
+        
         # Cache: {challenge_api_endpoint: (fernet, key_uuid, handshake_time)}
         self._key_cache: Dict[str, Tuple[Fernet, str, float]] = {}
     
@@ -204,12 +208,19 @@ class ValidatorFiberClient:
         if challenge_api_endpoint in self._key_cache:
             fernet, key_uuid, handshake_time = self._key_cache[challenge_api_endpoint]
             
-            # Check if key is still valid (not expired)
-            if time.time() - handshake_time < self.key_ttl_seconds:
+            # Check if key is still valid (with safety margin to prevent race conditions)
+            # Refresh keys before they expire on the server side
+            effective_ttl = self.key_ttl_seconds - self.key_refresh_margin_seconds
+            key_age = time.time() - handshake_time
+            
+            if key_age < effective_ttl:
                 return (fernet, key_uuid)
             else:
-                # Key expired, remove from cache
-                logger.debug(f"Symmetric key expired for {challenge_api_endpoint}, re-handshaking")
+                # Key expired or approaching expiration, remove from cache and re-handshake
+                logger.debug(
+                    f"Symmetric key expired or near expiration for {challenge_api_endpoint} "
+                    f"(age: {key_age:.0f}s, effective TTL: {effective_ttl}s), re-handshaking"
+                )
                 del self._key_cache[challenge_api_endpoint]
         
         # Perform handshake
@@ -522,6 +533,36 @@ class ValidatorFiberClient:
                 headers=headers,
                 timeout=60.0  # Longer timeout for file uploads
             )
+            
+            # Handle key expiration with automatic retry
+            if response.status_code == 401:
+                logger.warning(
+                    f"Received 401 from Challenge API - key may have expired. "
+                    f"Clearing cache and retrying with new handshake..."
+                )
+                # Clear the cached key and retry once
+                if challenge_api_endpoint in self._key_cache:
+                    del self._key_cache[challenge_api_endpoint]
+                
+                # Re-establish handshake
+                handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
+                if not handshake_result:
+                    logger.error(f"Failed to re-establish handshake after 401 error")
+                    return None
+                
+                fernet, key_uuid = handshake_result
+                
+                # Re-encrypt with new key
+                encrypted_payload = fernet.encrypt(upload_json)
+                headers["symmetric-key-uuid"] = key_uuid
+                
+                # Retry the upload
+                response = await client.post(
+                    url,
+                    content=encrypted_payload,
+                    headers=headers,
+                    timeout=60.0
+                )
             
             if response.status_code in (200, 201):
                 result = response.json()

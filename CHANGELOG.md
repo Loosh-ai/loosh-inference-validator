@@ -7,6 +7,146 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### Centralized Internal Configuration (`validator/internal_config.py`)
+
+**Rationale:** Ensure all validators use identical operational parameters for network consistency. Prevents accidental misconfiguration of critical values.
+
+**New file:** `validator/internal_config.py` containing `InternalConfig` dataclass with all hard-coded parameters:
+
+| Category | Parameters |
+|----------|------------|
+| **Miner Selection** | `MIN_MINERS=3`, `MAX_MINERS=10`, `MIN_STAKE_THRESHOLD=100`, `MAX_MINER_STAKE=999` |
+| **Challenge Timing** | `CHALLENGE_INTERVAL_SECONDS=300`, `CHALLENGE_TIMEOUT_SECONDS=120`, `EVALUATION_TIMEOUT_SECONDS=300` |
+| **Scoring** | `SCORE_THRESHOLD=0.7` |
+| **Weight Setting** | `WEIGHTS_INTERVAL_SECONDS=4320`, `WEIGHT_MIN_SERVING_NODES=1`, `WEIGHT_FRESHNESS_HOURS=3/24` |
+| **Deregistration** | `DEREGISTRATION_BLOCK_LIMIT=5000`, `DEGRADED_MODE_THRESHOLD=4000`, `EMERGENCY_MODE_THRESHOLD=4500` |
+
+**Removed from `.env`:** All parameters listed above are no longer configurable via environment variables.
+
+**Migration:** No action required. Values match previous defaults. To modify, edit `validator/internal_config.py` directly.
+
+### Added
+
+#### Tiered Fallback Strategy for Weight Setting (`validator/evaluation/set_weights.py`, `docs/WEIGHT_SETTING_FALLBACK_STRATEGY.md`)
+
+**Problem:** Validators faced a critical dilemma:
+1. Challenge API failures → validators can't submit results → freshness gate zeros weights → weight setting skipped
+2. Skipping weight setting indefinitely → validator deregistered at ~5000 blocks
+3. BUT: Distributing weights uniformly would reward untested/adversarial miners unfairly
+
+**Solution:** Implemented three-tier operation mode based on blocks since last weight update:
+
+**NORMAL MODE** (< 4000 blocks):
+- Standard 3-hour freshness gate
+- Skip weight setting if all weights zero (safe because plenty of time before deregistration)
+- Production-grade quality standards
+
+**DEGRADED MODE** (4000-4499 blocks):
+- Relaxed 24-hour freshness gate (instead of 3 hours)
+- Uses emissions from **local validator DB** (stored during evaluation, regardless of Challenge API success)
+- Still skips if all weights zero after relaxed gate
+- Logs warnings to alert operators
+
+**EMERGENCY MODE** (≥ 4500 blocks):
+- No freshness gate - uses ALL available emissions from local DB
+- If still no emissions → distributes minimal uniform weights as absolute last resort
+- Critical alerts for operator intervention
+
+**Key Insight:** Validators **already store emissions locally** after evaluation (before submitting to Challenge API). The freshness gate determines whether to **use** the emissions, not whether they exist.
+
+**Why This Doesn't Skew Weights:**
+- Local emissions are real (same consensus algorithm as Challenge API submission)
+- Degraded/Emergency modes use actual performance data from local evaluations
+- Uniform distribution only happens in extreme edge case (no local DB emissions + imminent deregistration)
+- Mode transitions are gradual (normal → degraded → emergency)
+
+**Constants** (hard-coded for network consistency):
+```python
+WEIGHT_FRESHNESS_HOURS = 3                    # Normal mode
+WEIGHT_FRESHNESS_HOURS_DEGRADED = 24          # Degraded mode
+DEREGISTRATION_BLOCK_LIMIT = 5000             # Bittensor threshold
+DEGRADED_MODE_THRESHOLD = 4000                # 80% of limit
+EMERGENCY_MODE_THRESHOLD = 4500               # 90% of limit
+```
+
+**Monitoring:**
+- `⚠️ DEGRADED MODE` logs → Check Challenge API connectivity
+- `⚠️ EMERGENCY MODE` logs → URGENT intervention needed
+- Track `blocks_since_last_update` in observability dashboards
+
+See [WEIGHT_SETTING_FALLBACK_STRATEGY.md](docs/WEIGHT_SETTING_FALLBACK_STRATEGY.md) for complete documentation.
+
+#### Garbage Consensus Prevention (`validator/evaluation/Evaluation/consensus_engine.py`, `validator/evaluation/evaluation.py`)
+
+Added multi-layer defense against coordinated low-quality response attacks:
+
+- **Semantic quality assessment**: Filters responses by prompt relevance, information density, specificity, and coherence (threshold: 0.35)
+- **Smart outlier detection**: Quality-aware logic that protects high-quality unique responses from removal
+- **Quality-weighted consensus**: High-quality responses have more influence on consensus determination
+- **Diversity bonus**: Rewards unique high-quality responses (up to +15%)
+- **Garbage detection alerts**: Automatic logging when low-quality clusters detected
+
+Pipeline now runs quality assessment FIRST before clustering (prevents garbage from forming consensus). Individual scoring rebalanced: similarity (40%), quality (25%), confidence (15%), consensus (10%), diversity (15%).
+
+### Fixed
+
+#### Pipeline Timing Import Fix (`validator/challenge/send_challenge.py`)
+
+**Problem:** Runtime error when trying to merge miner timing data:
+```
+name 'PipelineTiming' is not defined
+```
+
+**Solution:** Added missing imports:
+```python
+from validator.timing import PipelineTiming, PipelineStages
+```
+
+**Impact:**
+- ✅ Miner timing data can now be properly merged into pipeline timing
+- ✅ Timing metadata from miner responses is correctly captured
+- ✅ No more runtime errors when miners return timing information
+
+#### Fiber Encryption Key Expiration Race Condition (`validator/network/fiber_client.py`)
+
+**Problem:**  401 errors when uploading heatmaps to Challenge API:
+```
+Failed to decrypt payload. Key may be expired or invalid.
+```
+
+**Root Cause:** Race condition between client and server key expiration checks:
+
+**Solution:** 
+- Added 60-second **safety margin** for client-side key refresh (`key_refresh_margin_seconds = 60`)
+- Client now refreshes keys at 3540s (TTL - margin) instead of 3600s
+- Added automatic retry with re-handshake on 401 errors in `send_encrypted_upload`
+- Improved logging to show key age and effective TTL when refreshing
+
+**Impact:**
+- ✅ Prevents keys from expiring during transmission
+- ✅ Reduces fallback to plain HTTP uploads
+- ✅ Automatic recovery from occasional race conditions
+- ✅ Better debugging with detailed key age logging
+
+#### Test Mode Response Detection (`validator/evaluation/evaluation.py`)
+
+**Problem:** Miners could return test mode responses and still receive emissions/rewards:
+**Solution:**
+Test Mode Responses are filtered out.
+
+#### IPv6 Address Support
+
+**Problem:** Validators couldn't connect to miners with IPv6 addresses
+
+**Solution:** Created `construct_server_address_with_ipv6()` utility function that:
+- Detects IPv6 addresses (contains `:`) and wraps them in square brackets: `http://[ipv6]:port`
+- Maintains backward compatibility with IPv4 addresses: `http://ipv4:port`
+- Handles local development cases (`0.0.0.1`, `localhost`)
+
+**Impact:**
+- ✅ Validators can now connect to IPv6 miners for availability checks
 ---
 
 ## [1.0.1] - 2026-02-05

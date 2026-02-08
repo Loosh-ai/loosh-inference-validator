@@ -33,11 +33,13 @@ from fiber.validator.client import construct_server_address
 from fiber.chain.chain_utils import load_hotkey_keypair, load_coldkeypub_keypair
 from fiber.chain.fetch_nodes import get_nodes_for_netuid
 from fiber.chain.interface import get_substrate
+from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
 
 from pathlib import Path
 from datetime import timedelta
 
 from validator.config import get_validator_config
+from validator.internal_config import INTERNAL_CONFIG
 
 
 def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) -> ChallengeAPIResponse:
@@ -92,8 +94,8 @@ async def main_loop():
     logger.info(f"Subnet: {config.netuid}")
     logger.info(f"Wallet: {config.wallet_name}")
     logger.info(f"Hotkey: {config.hotkey_name}")
-    logger.info(f"Challenge Interval: {config.challenge_interval}")
-    logger.info(f"Challenge Timeout: {config.challenge_timeout}")
+    logger.info(f"Challenge Interval: {INTERNAL_CONFIG.challenge_interval} (internal)")
+    logger.info(f"Challenge Timeout: {INTERNAL_CONFIG.challenge_timeout} (internal)")
     logger.info(f"Challenge API URL: {config.challenge_api_url}")
     logger.info(f"Challenge API Key: {'*' * (len(config.challenge_api_key) - 4) + config.challenge_api_key[-4:] if len(config.challenge_api_key) > 4 else '***'}")
     test_mode = getattr(config, 'test_mode', False)
@@ -244,7 +246,7 @@ async def main_loop():
         max_concurrent=config.max_concurrent_availability_checks,
         db_path=config.db_path,
         check_interval=30.0,  # Check every 30 seconds
-        max_miners=config.max_miners
+        max_miners=INTERNAL_CONFIG.MAX_MINERS
     )
     availability_worker.start()
     
@@ -412,7 +414,7 @@ async def main_loop():
         # Create httpx client for challenge sending
         pool_size = max(100, config.max_concurrent_availability_checks * 2)
         async with httpx.AsyncClient(
-            timeout=config.challenge_timeout.total_seconds(),
+            timeout=INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS,
             limits=httpx.Limits(
                 max_connections=pool_size, 
                 max_keepalive_connections=pool_size // 2
@@ -597,7 +599,7 @@ async def main_loop():
                                 
                                 challenge_task = await send_challenge(
                                     client=client,
-                                    server_address=construct_server_address(node_with_ip, replace_with_localhost=True),
+                                    server_address=construct_server_address_with_ipv6(node_with_ip, replace_with_localhost=True),
                                     challenge_id=challenge_id,
                                     challenge_orig=challenge_orig,
                                     challenge=challenge,

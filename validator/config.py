@@ -1,8 +1,11 @@
 """
 Validator configuration using Pydantic 2 with environment variable support.
+
+IMPORTANT: Many operational parameters are NOT configurable via environment
+and are instead hard-coded in validator/internal_config.py for network consistency.
+See that file for: miner selection, challenge timing, scoring, and weight setting parameters.
 """
 
-from datetime import timedelta
 from pathlib import Path
 from typing import Optional, Literal
 
@@ -14,14 +17,23 @@ from validator.config.shared_config import WalletConfig
 # CONFIG - ValidatorConfig [
 
 class ValidatorConfig(BaseSettings):
-    """Configuration for the validator using Pydantic 2 BaseSettings."""
+    """
+    Configuration for the validator using Pydantic 2 BaseSettings.
+    
+    NOTE: Operational parameters (miner selection, challenge timing, scoring,
+    weight setting) are hard-coded in validator/internal_config.py for network
+    consistency. This config only contains deployment-specific settings like
+    network endpoints, wallet names, API URLs, etc.
+    """
     
     model_config = SettingsConfigDict(
         env_file=("/workspace/.env", ".env"),  # Check RunPod location first, then local
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
-        env_ignore_empty=True  # Ignore empty env files
+        env_ignore_empty=True,  # Ignore empty env files
+        # Exclude internal settings from environment variable parsing
+        protected_namespaces=()  # Disable pydantic protected namespace warnings
     )
     
     # Network configuration
@@ -41,48 +53,20 @@ class ValidatorConfig(BaseSettings):
 
     wallet: WalletConfig = Field(default_factory=WalletConfig)
     
-    # Miner selection parameters
-    min_miners: int = Field(default=3, description="Minimum number of miners to select")
-    max_miners: int = Field(default=10, description="Maximum number of miners to select")
-    min_stake_threshold: int = Field(default=100, description="Minimum stake required (in TAO)")
+    # NOTE: Miner selection parameters (MIN_MINERS, MAX_MINERS, MIN_STAKE_THRESHOLD, MAX_MINER_STAKE)
+    # are now hard-coded in validator/internal_config.py for network consistency.
     
-    # Challenge parameters (in seconds for environment variables)
-    # Testnet: 10 seconds
-    # Mainnet: 300 seconds
-    challenge_interval_seconds: int = Field(default=10, description="Time between challenges (seconds)")
-    challenge_timeout_seconds: int = Field(default=120, description="Timeout for challenge responses (seconds)")
-    evaluation_timeout_seconds: int = Field(default=300, description="Evaluation timeout (seconds)")
+    # NOTE: Challenge parameters (CHALLENGE_INTERVAL_SECONDS, CHALLENGE_TIMEOUT_SECONDS,
+    # EVALUATION_TIMEOUT_SECONDS) are now hard-coded in validator/internal_config.py.
     
-    # Convert to timedelta objects
-    @property
-    def challenge_interval(self) -> timedelta:
-        return timedelta(seconds=self.challenge_interval_seconds)
+    # NOTE: Scoring parameters (SCORE_THRESHOLD) are now hard-coded in validator/internal_config.py.
     
-    @property
-    def challenge_timeout(self) -> timedelta:
-        return timedelta(seconds=self.challenge_timeout_seconds)
-    
-    @property
-    def evaluation_timeout(self) -> timedelta:
-        return timedelta(seconds=self.evaluation_timeout_seconds)
+    # NOTE: Weight setting parameters (WEIGHTS_INTERVAL_SECONDS, WEIGHT_FRESHNESS_HOURS,
+    # WEIGHT_MIN_SERVING_NODES, etc.) are hard-coded in validator/internal_config.py.
     
     # Database configuration
     db_path: str = Field(default="validator.db", description="Database file path")
     users_db_path: str = Field(default="users.db", description="Users database file path")
-    
-    # Scoring parameters
-    score_threshold: float = Field(
-        default=0.7, 
-        description="Minimum score required for valid responses",
-        ge=0.0,
-        le=1.0
-    )
-    
-    # Weight setting parameters are hard-coded in set_weights.py to ensure
-    # consistent behavior across all validators:
-    # - WEIGHTS_INTERVAL_SECONDS = 4320 (72 minutes)
-    # - WEIGHT_FRESHNESS_HOURS = 3
-    # - WEIGHT_MIN_SERVING_NODES = 1
     
     # Metagraph refresh interval (in seconds) - how often to refresh node list from chain
     metagraph_refresh_interval_seconds: int = Field(
@@ -165,10 +149,13 @@ class ValidatorConfig(BaseSettings):
     )
     
     # Heatmap generation configuration
-    enable_heatmap_generation: bool = Field(
-        default=True,
-        description="Enable heatmap generation for consensus evaluation. When disabled, heatmaps will not be generated or uploaded."
-    )
+    # INTERNAL SETTING ONLY - NOT CONFIGURABLE VIA ENVIRONMENT VARIABLES
+    # Hardcoded to False to reduce processing overhead and upload failures
+    # To change, modify this source file directly
+    @property
+    def enable_heatmap_generation(self) -> bool:
+        """Enable heatmap generation. Hardcoded to False (internal setting only)."""
+        return False
     
     # Quality plot generation configuration
     enable_quality_plots: bool = Field(

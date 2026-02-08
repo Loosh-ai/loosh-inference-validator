@@ -838,12 +838,22 @@ With default α=0.3 and a 24-hour lookback period, this means:
 
 ### Weight Setting Process
 
-1. **Background Task**: Runs every 30 minutes (configurable via `WEIGHTS_INTERVAL_SECONDS`)
-2. **EMA Calculation**: Queries emissions from the last 24 hours and computes EMA per miner
-3. **Normalization**: Weights are scaled to sum to 1.0 (Bittensor requirement)
-4. **Chain Submission**: Weights are submitted using the Bittensor SDK v10+
+The validator uses a **tiered fallback strategy** to balance fair rewards with deregistration prevention:
+
+1. **Background Task**: Runs every 72 minutes (hard-coded via `WEIGHTS_INTERVAL_SECONDS = 4320`)
+2. **EMA Calculation**: Queries emissions from the last 24 hours from **local database** and computes EMA per miner
+3. **Mode Determination**: Checks blocks since last update to determine operation mode:
+   - **NORMAL** (< 4000 blocks): 3-hour freshness gate, skip if all zero
+   - **DEGRADED** (4000-4499 blocks): 24-hour relaxed freshness gate
+   - **EMERGENCY** (≥ 4500 blocks): No freshness gate, use any emissions to prevent deregistration
+4. **Normalization**: Weights are scaled to sum to 1.0 (Bittensor requirement)
+5. **Chain Submission**: Weights are submitted using the Bittensor SDK v10+
+
+**Important**: Emissions are stored in the validator's **local database** immediately after evaluation, regardless of whether the Challenge API accepts the batch submission. This means weight setting is resilient to Challenge API outages while still using real performance data.
 
 **Technical Note:** The validator uses the **Bittensor SDK** (not Fiber) for weight setting because CRv3 has been removed from the chain. The SDK automatically handles CRv4 commit-reveal at the chain level.
+
+**See also**: [WEIGHT_SETTING_FALLBACK_STRATEGY.md](docs/WEIGHT_SETTING_FALLBACK_STRATEGY.md) for detailed information about the tiered fallback modes and how they prevent deregistration during Challenge API outages.
 
 ### Database Cleanup
 
