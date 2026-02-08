@@ -52,15 +52,13 @@ class APIConfig(BaseConfig):
 
 
 class LLMConfig(BaseConfig):
-    """LLM configuration settings."""
+    """LLM configuration settings.
     
-    default_model: str = Field(
-        default="mistralai/Mistral-7B-v0.1",
-        description="Default model to use"
-    )
-    default_max_tokens: int = Field(default=512, description="Default max tokens")
-    default_temperature: float = Field(default=0.7, description="Default temperature")
-    default_top_p: float = Field(default=0.95, description="Default top-p value")
+    NOTE: LLM behavior params (DEFAULT_MODEL, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P) are now hard-coded in validator/internal_config.py for network consistency.
+    This class is kept for backward compatibility but contains no active fields.
+    """
+    pass
 
 
 class LoggingConfig(BaseConfig):
@@ -93,11 +91,8 @@ class ValidatorSpecificConfig(BaseConfig):
     # NOTE: Weights update interval (WEIGHTS_INTERVAL_SECONDS) is now hard-coded
     # in validator/internal_config.py for network consistency.
     
-    # Metagraph refresh interval (in seconds) - how often to refresh node list from chain
-    metagraph_refresh_interval_seconds: int = Field(
-        default=300, 
-        description="Metagraph refresh interval (seconds) - how often to fetch new node registrations from chain"
-    )
+    # NOTE: Metagraph refresh interval (METAGRAPH_REFRESH_INTERVAL_SECONDS) is now
+    # hard-coded in validator/internal_config.py for network consistency.
     
     # Test mode configuration
     test_mode: bool = Field(

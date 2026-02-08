@@ -25,6 +25,7 @@ from validator.endpoints.challenges import ChallengeCreate
 
 from validator.db.operations import DatabaseManager
 from validator.evaluation.sybil_sync import SybilSyncTask
+from validator.evaluation.miner_network_reporter import MinerNetworkReporter
 from validator.validator_list_fetcher import ValidatorListFetcher
 from validator.evaluation.evaluation import InferenceValidator
 
@@ -214,7 +215,7 @@ async def main_loop():
         nodes = []
 
     # Concurrency control
-    max_concurrent = config.max_concurrent_challenges
+    max_concurrent = INTERNAL_CONFIG.MAX_CONCURRENT_CHALLENGES
     challenge_semaphore = asyncio.Semaphore(max_concurrent)
     logger.info(f"Concurrency limit: {max_concurrent} concurrent challenges")
     
@@ -243,7 +244,7 @@ async def main_loop():
     # Initialize availability worker (non-blocking background process)
     availability_worker = AvailabilityWorker(
         hotkey=hotkey.ss58_address,
-        max_concurrent=config.max_concurrent_availability_checks,
+        max_concurrent=INTERNAL_CONFIG.MAX_CONCURRENT_AVAILABILITY_CHECKS,
         db_path=config.db_path,
         check_interval=30.0,  # Check every 30 seconds
         max_miners=INTERNAL_CONFIG.MAX_MINERS
@@ -300,9 +301,27 @@ async def main_loop():
         logger.warning(f"Failed to start sybil sync task: {e}. Continuing without sybil sync.")
         sybil_sync_task = None
     
+    # Full metagraph node list — updated on every refresh so the network
+    # reporter can observe ALL registered miners (not just available ones).
+    _all_metagraph_nodes: List[Node] = list(nodes)  # seeded with initial fetch
+
+    # Initialize miner network reporter (sends metagraph observations for sybil scoring)
+    miner_network_reporter = None
+    try:
+        miner_network_reporter = MinerNetworkReporter(
+            validator_hotkey_ss58=hotkey.ss58_address,
+            get_nodes=lambda: list(_all_metagraph_nodes),
+            report_interval_seconds=float(INTERNAL_CONFIG.METAGRAPH_REFRESH_INTERVAL_SECONDS),
+        )
+        await miner_network_reporter.start()
+        logger.info("Miner network reporter started (will periodically send metagraph observations to Challenge API)")
+    except Exception as e:
+        logger.warning(f"Failed to start miner network reporter: {e}. Continuing without network observation reporting.")
+        miner_network_reporter = None
+
     # Background task to periodically refresh metagraph (pick up new node registrations)
     metagraph_refresh_task = None
-    metagraph_refresh_interval = float(config.metagraph_refresh_interval_seconds)
+    metagraph_refresh_interval = float(INTERNAL_CONFIG.METAGRAPH_REFRESH_INTERVAL_SECONDS)
     
     async def refresh_metagraph_loop():
         """Periodically refresh the metagraph to pick up new node registrations."""
@@ -320,6 +339,9 @@ async def main_loop():
                     
                     # Update availability worker with new node list
                     availability_worker.update_nodes(refreshed_nodes)
+                    # Update the full metagraph snapshot for network reporter
+                    nonlocal _all_metagraph_nodes
+                    _all_metagraph_nodes = list(refreshed_nodes)
                     logger.info(f"Metagraph refreshed: {len(refreshed_nodes)} nodes (availability worker updated)")
                     
                 except Exception as e:
@@ -412,7 +434,7 @@ async def main_loop():
     
     try:
         # Create httpx client for challenge sending
-        pool_size = max(100, config.max_concurrent_availability_checks * 2)
+        pool_size = max(100, INTERNAL_CONFIG.MAX_CONCURRENT_AVAILABILITY_CHECKS * 2)
         async with httpx.AsyncClient(
             timeout=INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS,
             limits=httpx.Limits(
@@ -451,7 +473,7 @@ async def main_loop():
                             # Add validator receive stage
                             pipeline_timing.add_stage(PipelineStages.VALIDATOR_RECEIVE)
                         
-                        default_model = config.default_model
+                        default_model = INTERNAL_CONFIG.DEFAULT_MODEL
                         challenge_id = challenge_data.id
                         prompt = challenge_data.prompt
                         
@@ -768,6 +790,13 @@ async def main_loop():
                 await sybil_sync_task.stop()
             except Exception as e:
                 logger.warning(f"Error stopping sybil sync task: {e}")
+        
+        if miner_network_reporter:
+            logger.info("Shutting down miner network reporter...")
+            try:
+                await miner_network_reporter.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping miner network reporter: {e}")
         
         if metagraph_refresh_task:
             logger.info("Shutting down metagraph refresh task...")

@@ -35,14 +35,19 @@ class DatabaseManager:
         last_success: Optional[datetime] = None,
         error: Optional[str] = None
     ) -> None:
-        """Log or update miner information."""
+        """Log or update miner information.
+        
+        UID COMPRESSION SAFETY: Looks up miners by HOTKEY (persistent SS58 address),
+        not by node_id (UID). UIDs are transient indices that change on UID compression.
+        node_id is stored as an informational snapshot and updated each observation.
+        """
         with self.get_session() as session:
-            # Check if miner exists
-            miner = session.query(Miner).filter_by(node_id=node_id).first()
+            # Look up by HOTKEY (persistent identity), not node_id (UID)
+            miner = session.query(Miner).filter_by(hotkey=hotkey).first()
             
             if miner:
-                # Update existing miner
-                miner.hotkey = hotkey
+                # Update existing miner — including node_id which may change on UID compression
+                miner.node_id = node_id  # Informational snapshot, updated each observation
                 miner.ip = ip
                 miner.port = port
                 miner.stake = stake
@@ -210,12 +215,16 @@ class DatabaseManager:
         self,
         lookback_hours: int = 24,
         alpha: float = 0.3
-    ) -> Dict[int, float]:
+    ) -> Dict[str, float]:
         """
         Calculate EMA (Exponential Moving Average) scores for miners based on emissions from evaluations.
         
         The EMA gives more weight to recent performance while still considering historical data.
         Formula: EMA = alpha * current + (1 - alpha) * previous_EMA
+        
+        UID COMPRESSION SAFETY: Returns dict keyed by miner HOTKEY (persistent SS58 address),
+        NOT by UID. During transition, handles both old UID-keyed and new hotkey-keyed emissions
+        by mapping UIDs to hotkeys via the Miner table.
         
         Args:
             lookback_hours: How far back to look for evaluation results (default: 24 hours)
@@ -223,7 +232,7 @@ class DatabaseManager:
                    Default 0.3 means 30% weight to current, 70% to history.
         
         Returns:
-            Dict mapping node_id (int) -> ema_score (float)
+            Dict mapping miner_hotkey (str) -> ema_score (float)
         """
         cutoff_time = datetime.utcnow() - timedelta(hours=lookback_hours)
         
@@ -241,29 +250,40 @@ class DatabaseManager:
                 logger.info(f"No evaluation results found in last {lookback_hours} hours for EMA calculation")
                 return {}
             
-            # Track EMA scores per miner (node_id)
-            ema_scores: Dict[int, float] = {}
+            # Build UID->hotkey mapping from Miner table for backward compatibility
+            # (old emissions are keyed by UID strings, new ones by hotkey)
+            miners = session.query(Miner).all()
+            uid_to_hotkey = {str(m.node_id): m.hotkey for m in miners if m.node_id is not None}
+            
+            # Track EMA scores per miner (keyed by HOTKEY)
+            ema_scores: Dict[str, float] = {}
             
             for result in results:
                 if not result.emissions:
                     continue
                 
-                # Emissions dict has format: {"node_id": emission_value, ...}
-                # Keys are strings in JSON, values are floats
-                for node_id_str, emission_value in result.emissions.items():
+                # Emissions dict has format: {"key": emission_value, ...}
+                # key is either a hotkey (new format) or a UID string (old format)
+                for emission_key, emission_value in result.emissions.items():
                     try:
-                        node_id = int(node_id_str)
                         emission = float(emission_value)
                         
-                        if node_id in ema_scores:
+                        # Determine the hotkey for this emission entry
+                        # Try UID->hotkey mapping first (for old UID-keyed emissions)
+                        hotkey = uid_to_hotkey.get(emission_key)
+                        if hotkey is None:
+                            # Key is not a known UID — assume it's already a hotkey (new format)
+                            hotkey = emission_key
+                        
+                        if hotkey in ema_scores:
                             # Update EMA: alpha * current + (1 - alpha) * previous
-                            ema_scores[node_id] = alpha * emission + (1 - alpha) * ema_scores[node_id]
+                            ema_scores[hotkey] = alpha * emission + (1 - alpha) * ema_scores[hotkey]
                         else:
                             # First observation for this miner - initialize with current value
-                            ema_scores[node_id] = emission
+                            ema_scores[hotkey] = emission
                             
                     except (ValueError, TypeError) as e:
-                        logger.warning(f"Invalid emission data for node {node_id_str}: {e}")
+                        logger.warning(f"Invalid emission data for key {emission_key}: {e}")
                         continue
             
             logger.info(
@@ -273,15 +293,18 @@ class DatabaseManager:
             
             return ema_scores
     
-    def get_miner_last_success_times(self) -> Dict[int, datetime]:
+    def get_miner_last_success_times(self) -> Dict[str, datetime]:
         """
         Get the last successful response timestamp for each miner.
         
         Used by weight setting to apply a freshness gate - miners without
         recent successful responses should not receive weight.
         
+        UID COMPRESSION SAFETY: Returns dict keyed by miner HOTKEY (persistent SS58 address),
+        NOT by UID. UIDs are transient indices that change on UID compression/trimming.
+        
         Returns:
-            Dict mapping node_id (int) -> last_success (datetime)
+            Dict mapping miner_hotkey (str) -> last_success (datetime)
         """
         with self.get_session() as session:
             miners = (
@@ -291,9 +314,9 @@ class DatabaseManager:
             )
             
             result = {
-                miner.node_id: miner.last_success
+                miner.hotkey: miner.last_success
                 for miner in miners
-                if miner.last_success is not None
+                if miner.last_success is not None and miner.hotkey
             }
             
             logger.debug(f"Retrieved last_success times for {len(result)} miners")

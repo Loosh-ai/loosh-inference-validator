@@ -108,6 +108,99 @@ class InternalConfig:
     EMERGENCY_MODE_THRESHOLD: int = 4500
     
     # =========================================================================
+    # Embedding & Evaluation Parameters
+    # =========================================================================
+    
+    # Sentence Transformer model for generating embeddings during evaluation
+    SENTENCE_TRANSFORMER_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    
+    # Enable narrative generation using LLM after consensus evaluation
+    # When disabled, evaluation and heatmap generation still run, but narrative is skipped.
+    ENABLE_NARRATIVE_GENERATION: bool = True
+    
+    # Enable heatmap generation
+    # Hardcoded to False to reduce processing overhead and upload failures
+    ENABLE_HEATMAP_GENERATION: bool = False
+    
+    # Enable quality plot generation (response length distribution)
+    # When enabled, generates quality plots alongside heatmaps when quality filtering is active.
+    ENABLE_QUALITY_PLOTS: bool = False
+    
+    # =========================================================================
+    # Metagraph Refresh Parameters
+    # =========================================================================
+    
+    # How often to refresh the metagraph from chain (in seconds).
+    # Controls how quickly new node registrations are picked up.
+    METAGRAPH_REFRESH_INTERVAL_SECONDS: int = 300
+    
+    # =========================================================================
+    # LLM Behavior Parameters
+    # =========================================================================
+    
+    # Default model for challenge inference requests
+    DEFAULT_MODEL: str = "mistralai/Mistral-7B-v0.1"
+    
+    # Default max tokens for challenge inference requests
+    DEFAULT_MAX_TOKENS: int = 512
+    
+    # Default temperature for challenge inference requests
+    DEFAULT_TEMPERATURE: float = 0.7
+    
+    # Default top-p for challenge inference requests
+    DEFAULT_TOP_P: float = 0.95
+    
+    # =========================================================================
+    # Concurrency Parameters
+    # =========================================================================
+    
+    # Maximum number of challenges to process concurrently
+    MAX_CONCURRENT_CHALLENGES: int = 10
+    
+    # Maximum number of concurrent miner availability checks
+    # (prevents connection pool exhaustion)
+    MAX_CONCURRENT_AVAILABILITY_CHECKS: int = 20
+    
+    # =========================================================================
+    # Fiber MLTS Parameters
+    # =========================================================================
+    
+    # Time-to-live for Fiber symmetric keys in seconds (default: 1 hour)
+    FIBER_KEY_TTL_SECONDS: int = 3600
+    
+    # Timeout for Fiber handshake operations in seconds
+    FIBER_HANDSHAKE_TIMEOUT_SECONDS: int = 30
+    
+    # Enable automatic key rotation for Fiber symmetric keys
+    FIBER_ENABLE_KEY_ROTATION: bool = True
+    
+    # =========================================================================
+    # Sybil Penalty Parameters
+    # =========================================================================
+    
+    # Enable sybil penalty in weight setting
+    # When False, sybil scores are fetched and logged but no penalty is applied.
+    SYBIL_PENALTY_ENABLED: bool = True
+    
+    # Maximum penalty that can be applied to a miner's weight (0.0 – 1.0).
+    # A sybil_score of 1.0 results in an 80% weight reduction (score * 0.2).
+    SYBIL_PENALTY_MAX: float = 0.8
+    
+    # Sybil score threshold below which no penalty is applied.
+    # Miners with sybil_score < this value are treated as clean.
+    SYBIL_PENALTY_THRESHOLD: float = 0.1
+    
+    # Safety valve: maximum fraction of serving miners that may be penalized.
+    # If more than this fraction would receive a penalty, the sybil penalty
+    # step is skipped entirely and a critical warning is logged.
+    # This prevents a miscalibrated sybil detector from tanking the entire subnet.
+    SYBIL_SAFETY_MAX_PENALIZED_FRACTION: float = 0.33
+    
+    # TTL for cached sybil scores fetched from the Challenge API (seconds).
+    # During this window, set_weights reuses the previous fetch result.
+    SYBIL_SCORE_CACHE_TTL_SECONDS: int = 300
+    
+    # =========================================================================
     # Convenience Properties (computed from base values)
     # =========================================================================
     
@@ -153,3 +246,34 @@ WEIGHT_FRESHNESS_HOURS_DEGRADED = INTERNAL_CONFIG.WEIGHT_FRESHNESS_HOURS_DEGRADE
 DEREGISTRATION_BLOCK_LIMIT = INTERNAL_CONFIG.DEREGISTRATION_BLOCK_LIMIT
 DEGRADED_MODE_THRESHOLD = INTERNAL_CONFIG.DEGRADED_MODE_THRESHOLD
 EMERGENCY_MODE_THRESHOLD = INTERNAL_CONFIG.EMERGENCY_MODE_THRESHOLD
+
+# Metagraph Refresh
+METAGRAPH_REFRESH_INTERVAL_SECONDS = INTERNAL_CONFIG.METAGRAPH_REFRESH_INTERVAL_SECONDS
+
+# LLM Behavior
+DEFAULT_MODEL = INTERNAL_CONFIG.DEFAULT_MODEL
+DEFAULT_MAX_TOKENS = INTERNAL_CONFIG.DEFAULT_MAX_TOKENS
+DEFAULT_TEMPERATURE = INTERNAL_CONFIG.DEFAULT_TEMPERATURE
+DEFAULT_TOP_P = INTERNAL_CONFIG.DEFAULT_TOP_P
+
+# Embedding & Evaluation
+SENTENCE_TRANSFORMER_MODEL = INTERNAL_CONFIG.SENTENCE_TRANSFORMER_MODEL
+ENABLE_NARRATIVE_GENERATION = INTERNAL_CONFIG.ENABLE_NARRATIVE_GENERATION
+ENABLE_HEATMAP_GENERATION = INTERNAL_CONFIG.ENABLE_HEATMAP_GENERATION
+ENABLE_QUALITY_PLOTS = INTERNAL_CONFIG.ENABLE_QUALITY_PLOTS
+
+# Concurrency
+MAX_CONCURRENT_CHALLENGES = INTERNAL_CONFIG.MAX_CONCURRENT_CHALLENGES
+MAX_CONCURRENT_AVAILABILITY_CHECKS = INTERNAL_CONFIG.MAX_CONCURRENT_AVAILABILITY_CHECKS
+
+# Fiber MLTS
+FIBER_KEY_TTL_SECONDS = INTERNAL_CONFIG.FIBER_KEY_TTL_SECONDS
+FIBER_HANDSHAKE_TIMEOUT_SECONDS = INTERNAL_CONFIG.FIBER_HANDSHAKE_TIMEOUT_SECONDS
+FIBER_ENABLE_KEY_ROTATION = INTERNAL_CONFIG.FIBER_ENABLE_KEY_ROTATION
+
+# Sybil Penalty
+SYBIL_PENALTY_ENABLED = INTERNAL_CONFIG.SYBIL_PENALTY_ENABLED
+SYBIL_PENALTY_MAX = INTERNAL_CONFIG.SYBIL_PENALTY_MAX
+SYBIL_PENALTY_THRESHOLD = INTERNAL_CONFIG.SYBIL_PENALTY_THRESHOLD
+SYBIL_SAFETY_MAX_PENALIZED_FRACTION = INTERNAL_CONFIG.SYBIL_SAFETY_MAX_PENALIZED_FRACTION
+SYBIL_SCORE_CACHE_TTL_SECONDS = INTERNAL_CONFIG.SYBIL_SCORE_CACHE_TTL_SECONDS

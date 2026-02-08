@@ -13,6 +13,12 @@ from sentence_transformers import SentenceTransformer
 from validator.challenge.challenge_types import InferenceResponse
 from validator.db.operations import DatabaseManager
 from validator.config import get_validator_config
+from validator.internal_config import (
+    SENTENCE_TRANSFORMER_MODEL,
+    ENABLE_NARRATIVE_GENERATION,
+    ENABLE_HEATMAP_GENERATION,
+    ENABLE_QUALITY_PLOTS,
+)
 from validator.network.fiber_client import ValidatorFiberClient
 
 # Import from local evaluation modules
@@ -34,9 +40,9 @@ class InferenceValidator:
         # Load configuration
         self.config = get_validator_config()
         
-        # Initialize embedding model from config
-        self.embedding_model = SentenceTransformer(self.config.sentence_transformer_model)
-        logger.info(f"Loaded sentence transformer model: {self.config.sentence_transformer_model}")
+        # Initialize embedding model from internal config (network-consistent, not env-configurable)
+        self.embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
+        logger.info(f"Loaded sentence transformer model: {SENTENCE_TRANSFORMER_MODEL}")
         
         # Initialize narrative generator with LLM config (only if enabled)
         # IMPORTANT: The API endpoint must implement OpenAI Chat Completions API format
@@ -44,7 +50,7 @@ class InferenceValidator:
         # The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
         # Get API key from config or environment
         self.narrative_generator = None
-        if self.config.enable_narrative_generation:
+        if ENABLE_NARRATIVE_GENERATION:
             api_key = getattr(self.config, 'llm_api_key', None) or os.getenv("LLM_API_KEY")
             
             self.narrative_generator = ConsensusNarrativeGenerator(
@@ -73,6 +79,7 @@ class InferenceValidator:
         prompt: str,
         responses: List[InferenceResponse],
         miner_ids: Optional[List[int]] = None,
+        miner_hotkeys: Optional[List[str]] = None,
         correlation_id: Optional[str] = None,
         validator_hotkey: Optional[str] = None
     ) -> Tuple[float, Optional[str], Optional[str], Dict[str, float]]:
@@ -83,6 +90,10 @@ class InferenceValidator:
             prompt: The original prompt
             responses: List of inference responses
             miner_ids: Optional list of miner UIDs corresponding to each response
+                       (used internally for ConsensusEngine labels; NOT for persistent identification)
+            miner_hotkeys: Optional list of miner hotkeys (SS58 addresses) corresponding to each response.
+                           Used as the primary persistent identifier for emissions dict keys and sybil detection.
+                           If not provided, falls back to str(miner_id) for backward compatibility.
             correlation_id: Optional correlation ID for tracking
             validator_hotkey: Optional validator hotkey SS58 for Fiber encryption
         
@@ -91,7 +102,7 @@ class InferenceValidator:
             - Consensus score
             - Path to heatmap image
             - Narrative of consensus
-            - Emissions allocation
+            - Emissions allocation (keyed by miner hotkey when miner_hotkeys provided, else str(miner_id))
         """
         # Store validator_hotkey for use in _upload_heatmap
         self._validator_hotkey = validator_hotkey
@@ -108,22 +119,28 @@ class InferenceValidator:
             # Test mode responses should receive zero emissions
             valid_responses = []
             valid_miner_ids = []
-            test_mode_miners = []
+            valid_miner_hotkeys = []
+            test_mode_miners = []  # List of hotkeys (or fallback UIDs) for test mode miners
             
             for i, response in enumerate(responses):
                 # Check if response indicates test mode
                 response_text = response.response_text.strip()
                 if response_text.startswith("[TEST MODE]"):
-                    miner_id = miner_ids[i] if miner_ids and i < len(miner_ids) else i
-                    test_mode_miners.append(miner_id)
+                    # Use hotkey as primary identifier, fallback to UID string
+                    miner_key = (miner_hotkeys[i] if miner_hotkeys and i < len(miner_hotkeys)
+                                 else str(miner_ids[i]) if miner_ids and i < len(miner_ids)
+                                 else str(i))
+                    test_mode_miners.append(miner_key)
                     logger.warning(
-                        f"[EVALUATION] Miner {miner_id} returned test mode response - "
+                        f"[EVALUATION] Miner {miner_key[:16]}... returned test mode response - "
                         f"will receive ZERO emissions. Response: {response_text[:100]}"
                     )
                 else:
                     valid_responses.append(response)
                     if miner_ids and i < len(miner_ids):
                         valid_miner_ids.append(miner_ids[i])
+                    if miner_hotkeys and i < len(miner_hotkeys):
+                        valid_miner_hotkeys.append(miner_hotkeys[i])
             
             # If all responses are test mode, return zero emissions for all
             if not valid_responses:
@@ -131,7 +148,7 @@ class InferenceValidator:
                     f"[EVALUATION] All {num_responses} responses were test mode - "
                     f"no valid responses to evaluate"
                 )
-                zero_emissions = {str(mid): 0.0 for mid in test_mode_miners}
+                zero_emissions = {miner_key: 0.0 for miner_key in test_mode_miners}
                 
                 # Log evaluation result with zero emissions
                 self.db_manager.log_evaluation_result(
@@ -158,12 +175,15 @@ class InferenceValidator:
             if num_valid == 1:
                 logger.info(f"[EVALUATION] Only 1 valid response received - using simple scoring (no consensus evaluation possible)")
                 # For single response, return a default score and create simple emissions
-                single_response = valid_responses[0]
-                emissions = {str(valid_miner_ids[0] if valid_miner_ids else 0): 1.0} if valid_miner_ids else {"0": 1.0}
+                # Use hotkey as key when available, fallback to UID string
+                single_key = (valid_miner_hotkeys[0] if valid_miner_hotkeys
+                              else str(valid_miner_ids[0]) if valid_miner_ids
+                              else "0")
+                emissions = {single_key: 1.0}
                 
-                # Add zero emissions for test mode miners
-                for test_miner_id in test_mode_miners:
-                    emissions[str(test_miner_id)] = 0.0
+                # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
+                for test_miner_key in test_mode_miners:
+                    emissions[test_miner_key] = 0.0
                 
                 # Log simple evaluation result
                 self.db_manager.log_evaluation_result(
@@ -205,14 +225,14 @@ class InferenceValidator:
             use_outlier_detection = num_valid >= min_responses_for_outlier_detection
             use_clustering = num_valid >= min_responses_for_clustering
             # Check config option and minimum response count
-            generate_heatmap = self.config.enable_heatmap_generation and num_valid >= 2  # Need at least 2 for meaningful heatmap
+            generate_heatmap = ENABLE_HEATMAP_GENERATION and num_valid >= 2  # Need at least 2 for meaningful heatmap
             
             if not use_outlier_detection:
                 logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_valid})")
             if not use_clustering:
                 logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_valid})")
             if not generate_heatmap:
-                if not self.config.enable_heatmap_generation:
+                if not ENABLE_HEATMAP_GENERATION:
                     logger.debug(f"[EVALUATION] Heatmap generation disabled by configuration")
                 else:
                     logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_valid})")
@@ -231,7 +251,7 @@ class InferenceValidator:
                 apply_quality_filter=False,  # Disable legacy word-length filter
                 quality_sensitivity=0.7,  # Deprecated - kept for backward compat
                 generate_heatmap=generate_heatmap,
-                generate_quality_plot=self.config.enable_quality_plots,
+                generate_quality_plot=ENABLE_QUALITY_PLOTS,
                 heatmap_path=f"temp/heatmap_{heatmap_id_safe}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png",
                 lambda_factor=1.0,
                 threshold_min=0.7,
@@ -264,13 +284,22 @@ class InferenceValidator:
             
             # Perform sybil detection analysis on valid responses only
             # Only run sybil detection if we have at least 2 valid responses
+            # NOTE: Sybil detection uses HOTKEYS as miner identifiers (not UIDs)
+            # for UID compression safety. Hotkeys are persistent SS58 addresses.
             sybil_result = None
             if num_valid >= 2:
                 try:
+                    # Use hotkeys for sybil detection (persistent identifier)
+                    # Fallback to str(uid) if hotkeys not available, then str(index)
+                    sybil_miner_ids = (
+                        valid_miner_hotkeys if valid_miner_hotkeys
+                        else [str(uid) for uid in valid_miner_ids] if valid_miner_ids
+                        else [str(i) for i in range(len(valid_responses))]
+                    )
                     sybil_result = self.sybil_detector.detect_sybil_patterns(
                         similarity_matrix=original_similarity_matrix,
                         responses=valid_responses,
-                        miner_ids=valid_miner_ids if valid_miner_ids else list(range(len(valid_responses))),
+                        miner_ids=sybil_miner_ids,
                         challenge_id=challenge_id
                     )
                 except Exception as e:
@@ -286,8 +315,8 @@ class InferenceValidator:
                 # Convert to JSON-serializable format for storage
                 suspicious_pairs_json = [
                     {
-                        "miner_id_1": pair.miner_id_1,
-                        "miner_id_2": pair.miner_id_2,
+                        "miner_hotkey_1": pair.miner_hotkey_1,
+                        "miner_hotkey_2": pair.miner_hotkey_2,
                         "similarity_score": pair.similarity_score,
                         "response_text_1": pair.response_text_1[:500],  # Truncate for storage
                         "response_text_2": pair.response_text_2[:500]
@@ -297,7 +326,7 @@ class InferenceValidator:
                 
                 suspicious_groups_json = [
                     {
-                        "miner_ids": sorted(list(group.miner_ids)),
+                        "miner_hotkeys": sorted(list(group.miner_hotkeys)),
                         "avg_similarity": group.avg_similarity,
                         "min_similarity": group.min_similarity,
                         "max_similarity": group.max_similarity,
@@ -326,7 +355,7 @@ class InferenceValidator:
             
             # Generate narrative (now async) - only if enabled
             narrative = None
-            if self.config.enable_narrative_generation and self.narrative_generator:
+            if ENABLE_NARRATIVE_GENERATION and self.narrative_generator:
                 try:
                     narrative = await self.narrative_generator.generate_narrative(result)
                     result.consensus_narrative = narrative
@@ -343,12 +372,17 @@ class InferenceValidator:
             individual_scores = result.miner_scores if result.miner_scores else {}
             
             # Calculate emissions for valid responses
-            emissions = self._calculate_emissions(valid_responses, result, valid_miner_ids, individual_scores)
+            # NOTE: Emissions dict keys are miner HOTKEYS when miner_hotkeys are provided,
+            # for UID compression safety. Falls back to str(miner_id) if not available.
+            emissions = self._calculate_emissions(
+                valid_responses, result, valid_miner_ids, individual_scores,
+                miner_hotkeys=valid_miner_hotkeys if valid_miner_hotkeys else None
+            )
             
-            # Add zero emissions for test mode miners
-            for test_miner_id in test_mode_miners:
-                emissions[str(test_miner_id)] = 0.0
-                logger.info(f"[EVALUATION] Miner {test_miner_id} test mode - emission set to 0.0")
+            # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
+            for test_miner_key in test_mode_miners:
+                emissions[test_miner_key] = 0.0
+                logger.info(f"[EVALUATION] Miner {test_miner_key[:16]}... test mode - emission set to 0.0")
             
             result.miner_scores = emissions
             
@@ -437,7 +471,8 @@ class InferenceValidator:
         responses: List[InferenceResponse],
         result: ConsensusResult,
         miner_ids: Optional[List[int]] = None,
-        individual_scores: Optional[Dict[str, float]] = None
+        individual_scores: Optional[Dict[str, float]] = None,
+        miner_hotkeys: Optional[List[str]] = None
     ) -> Dict[str, float]:
         """Calculate emissions allocation for miners.
         
@@ -445,7 +480,14 @@ class InferenceValidator:
             responses: List of inference responses
             result: Consensus evaluation result
             miner_ids: Optional list of miner UIDs corresponding to each response
+                       (used to derive consensus labels matching ConsensusEngine)
             individual_scores: Optional dict of individual response scores (label -> score)
+            miner_hotkeys: Optional list of miner hotkeys (SS58 addresses) for emissions dict keys.
+                           If provided, emissions are keyed by hotkey (UID compression safe).
+                           If not provided, falls back to str(miner_id) for backward compatibility.
+        
+        Returns:
+            Dict mapping miner identifier (hotkey preferred) to emission score.
         """
         # Base emissions on response time and consensus score
         total_time = sum(r.response_time_ms for r in responses)
@@ -461,8 +503,14 @@ class InferenceValidator:
             # Faster responses get more emissions
             time_ratio = 1 - (response.response_time_ms / total_time)
             
-            # Check if response is in consensus
-            response_label = f"R{i+1}"
+            # BUG FIX (t0-1): Use the ACTUAL label that ConsensusEngine assigns.
+            # When miner_ids are passed, ConsensusEngine labels are str(uid), not "R{i+1}".
+            # The label must match what's in result.in_consensus dict keys.
+            if miner_ids and i < len(miner_ids):
+                response_label = str(miner_ids[i])  # Matches ConsensusEngine label format
+            else:
+                response_label = f"R{i+1}"  # Default label when no miner_ids
+            
             in_consensus = response_label in result.in_consensus
             
             # Scale by consensus score and consensus status
@@ -475,9 +523,17 @@ class InferenceValidator:
             if highest_scoring_label and response_label == highest_scoring_label:
                 emission *= bonus_multiplier
             
-            # Use miner_id from the list if provided, otherwise use index
-            miner_id = miner_ids[i] if miner_ids and i < len(miner_ids) else i
-            emissions[str(miner_id)] = float(emission)  # Ensure Python float for JSON serialization
+            # UID COMPRESSION SAFETY (t0-3): Use hotkey as dict key when available.
+            # Hotkeys are persistent SS58 addresses that survive UID compression.
+            # Falls back to str(miner_id) if hotkeys not provided.
+            if miner_hotkeys and i < len(miner_hotkeys):
+                emission_key = miner_hotkeys[i]
+            elif miner_ids and i < len(miner_ids):
+                emission_key = str(miner_ids[i])
+            else:
+                emission_key = str(i)
+            
+            emissions[emission_key] = float(emission)  # Ensure Python float for JSON serialization
         
         return emissions
     

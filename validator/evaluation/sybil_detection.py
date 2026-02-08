@@ -16,9 +16,13 @@ from validator.challenge.challenge_types import InferenceResponse
 
 @dataclass
 class SybilPair:
-    """Represents a pair of suspiciously similar responses."""
-    miner_id_1: int
-    miner_id_2: int
+    """Represents a pair of suspiciously similar responses.
+    
+    miner_hotkey_1/miner_hotkey_2 are miner HOTKEYS (persistent SS58 addresses),
+    NOT UIDs. UIDs are transient indices that change on UID compression/trimming.
+    """
+    miner_hotkey_1: str  # Miner hotkey (persistent identity)
+    miner_hotkey_2: str  # Miner hotkey (persistent identity)
     similarity_score: float
     response_text_1: str
     response_text_2: str
@@ -27,23 +31,31 @@ class SybilPair:
 
 @dataclass
 class SybilGroup:
-    """Represents a group of miners with suspiciously similar responses."""
-    miner_ids: Set[int]
+    """Represents a group of miners with suspiciously similar responses.
+    
+    miner_hotkeys are miner HOTKEYS (persistent SS58 addresses),
+    NOT UIDs. UIDs are transient indices that change on UID compression/trimming.
+    """
+    miner_hotkeys: Set[str]  # Set of miner hotkeys (persistent identity)
     avg_similarity: float
     min_similarity: float
     max_similarity: float
-    response_texts: Dict[int, str]
+    response_texts: Dict[str, str]  # hotkey -> response text
     challenge_id: Optional[int] = None
 
 
 @dataclass
 class SybilDetectionResult:
-    """Results of sybil detection analysis."""
+    """Results of sybil detection analysis.
+    
+    miner_hotkeys are miner HOTKEYS (persistent SS58 addresses),
+    NOT UIDs. UIDs are transient indices that change on UID compression/trimming.
+    """
     challenge_id: Optional[int]
     suspicious_pairs: List[SybilPair]
     suspicious_groups: List[SybilGroup]
     similarity_matrix: np.ndarray
-    miner_ids: List[int]
+    miner_hotkeys: List[str]  # List of miner hotkeys (persistent identity)
     detection_timestamp: datetime
     high_similarity_threshold: float
     very_high_similarity_threshold: float
@@ -79,7 +91,7 @@ class SybilDetector:
         self,
         similarity_matrix: np.ndarray,
         responses: List[InferenceResponse],
-        miner_ids: List[int],
+        miner_ids: List[str],
         challenge_id: Optional[int] = None
     ) -> SybilDetectionResult:
         """
@@ -88,7 +100,8 @@ class SybilDetector:
         Args:
             similarity_matrix: Pairwise similarity matrix (n x n numpy array)
             responses: List of inference responses
-            miner_ids: List of miner IDs corresponding to each response
+            miner_ids: List of miner hotkeys (persistent SS58 addresses) corresponding to each response.
+                       NOTE: These are hotkeys, NOT UIDs. UIDs are transient and change on UID compression.
             challenge_id: Optional challenge ID for tracking
         
         Returns:
@@ -115,7 +128,7 @@ class SybilDetector:
             suspicious_pairs=suspicious_pairs,
             suspicious_groups=suspicious_groups,
             similarity_matrix=similarity_matrix,
-            miner_ids=miner_ids,
+            miner_hotkeys=miner_ids,
             detection_timestamp=datetime.utcnow(),
             high_similarity_threshold=self.high_similarity_threshold,
             very_high_similarity_threshold=self.very_high_similarity_threshold
@@ -125,7 +138,7 @@ class SybilDetector:
         self,
         similarity_matrix: np.ndarray,
         responses: List[InferenceResponse],
-        miner_ids: List[int],
+        miner_ids: List[str],
         challenge_id: Optional[int]
     ) -> List[SybilPair]:
         """Find pairs of responses with suspiciously high similarity."""
@@ -139,8 +152,8 @@ class SybilDetector:
                 
                 if similarity >= self.high_similarity_threshold:
                     pair = SybilPair(
-                        miner_id_1=miner_ids[i],
-                        miner_id_2=miner_ids[j],
+                        miner_hotkey_1=miner_ids[i],
+                        miner_hotkey_2=miner_ids[j],
                         similarity_score=float(similarity),
                         response_text_1=responses[i].response_text,
                         response_text_2=responses[j].response_text,
@@ -157,7 +170,7 @@ class SybilDetector:
         self,
         similarity_matrix: np.ndarray,
         responses: List[InferenceResponse],
-        miner_ids: List[int],
+        miner_ids: List[str],
         challenge_id: Optional[int]
     ) -> List[SybilGroup]:
         """
@@ -214,7 +227,7 @@ class SybilDetector:
                 
                 if similarities:
                     group = SybilGroup(
-                        miner_ids=set(group_miner_ids),
+                        miner_hotkeys=set(group_miner_ids),
                         avg_similarity=float(np.mean(similarities)),
                         min_similarity=float(np.min(similarities)),
                         max_similarity=float(np.max(similarities)),
@@ -248,7 +261,7 @@ class SybilDetector:
             f"Thresholds: High={result.high_similarity_threshold:.2f}, Very High={result.very_high_similarity_threshold:.2f}",
             "",
             f"Summary:",
-            f"  - Total Miners Analyzed: {len(result.miner_ids)}",
+            f"  - Total Miners Analyzed: {len(result.miner_hotkeys)}",
             f"  - Suspicious Pairs Found: {len(result.suspicious_pairs)}",
             f"  - Suspicious Groups Found: {len(result.suspicious_groups)}",
             ""
@@ -259,14 +272,14 @@ class SybilDetector:
             for i, pair in enumerate(result.suspicious_pairs[:10], 1):  # Show top 10
                 severity = "VERY HIGH" if pair.similarity_score >= result.very_high_similarity_threshold else "HIGH"
                 lines.append(
-                    f"  {i}. Miners {pair.miner_id_1} <-> {pair.miner_id_2}: "
+                    f"  {i}. Miners {pair.miner_hotkey_1} <-> {pair.miner_hotkey_2}: "
                     f"similarity={pair.similarity_score:.4f} ({severity})"
                 )
                 # Show response previews
                 preview_1 = pair.response_text_1[:100] + "..." if len(pair.response_text_1) > 100 else pair.response_text_1
                 preview_2 = pair.response_text_2[:100] + "..." if len(pair.response_text_2) > 100 else pair.response_text_2
-                lines.append(f"     Miner {pair.miner_id_1}: {preview_1}")
-                lines.append(f"     Miner {pair.miner_id_2}: {preview_2}")
+                lines.append(f"     Miner {pair.miner_hotkey_1}: {preview_1}")
+                lines.append(f"     Miner {pair.miner_hotkey_2}: {preview_2}")
                 lines.append("")
             
             if len(result.suspicious_pairs) > 10:
@@ -277,8 +290,8 @@ class SybilDetector:
             lines.append("Suspicious Groups:")
             for i, group in enumerate(result.suspicious_groups[:5], 1):  # Show top 5 groups
                 lines.append(
-                    f"  {i}. Group of {len(group.miner_ids)} miners: "
-                    f"IDs={sorted(group.miner_ids)}, "
+                    f"  {i}. Group of {len(group.miner_hotkeys)} miners: "
+                    f"hotkeys={sorted(group.miner_hotkeys)}, "
                     f"avg_similarity={group.avg_similarity:.4f}, "
                     f"range=[{group.min_similarity:.4f}, {group.max_similarity:.4f}]"
                 )

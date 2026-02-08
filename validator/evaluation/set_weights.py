@@ -16,9 +16,13 @@ We still use Fiber for other chain operations (node fetching, etc.) where it wor
 """
 
 import asyncio
+import json
+import time
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, TYPE_CHECKING
+from pathlib import Path
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import httpx
 from bittensor import Subtensor, Wallet
 from fiber.chain.fetch_nodes import get_nodes_for_netuid
 from fiber.chain.interface import get_substrate
@@ -36,10 +40,29 @@ from validator.internal_config import (
     DEREGISTRATION_BLOCK_LIMIT,
     DEGRADED_MODE_THRESHOLD,
     EMERGENCY_MODE_THRESHOLD,
+    SYBIL_PENALTY_ENABLED,
+    SYBIL_PENALTY_MAX,
+    SYBIL_PENALTY_THRESHOLD,
+    SYBIL_SAFETY_MAX_PENALIZED_FRACTION,
+    SYBIL_SCORE_CACHE_TTL_SECONDS,
 )
 
 if TYPE_CHECKING:
     from validator.validator_list_fetcher import ValidatorListFetcher
+
+
+# ---------------------------------------------------------------------------
+# Sybil score caching
+# ---------------------------------------------------------------------------
+# In-memory hot cache (fast path; survives across set_weights calls)
+_sybil_score_cache: Dict[str, float] = {}
+_sybil_score_cache_time: float = 0.0
+
+# Full breakdown cache (for logging / penalty reports)
+_sybil_breakdown_cache: Dict[str, Dict[str, Any]] = {}
+
+# File-based cold cache (survives validator restart)
+_SYBIL_CACHE_FILE = Path("sybil_score_cache.json")
 
 
 def _filter_serving_miners(
@@ -112,16 +135,19 @@ def _filter_serving_miners(
 
 
 def _apply_freshness_gate(
-    miner_ema_scores: Dict[int, float],
-    last_success_times: Dict[int, datetime],
+    miner_ema_scores: Dict[str, float],
+    last_success_times: Dict[str, datetime],
     freshness_hours: int,
-) -> tuple[Dict[int, float], int]:
+) -> tuple[Dict[str, float], int]:
     """
     Apply freshness gate to EMA scores.
     
     Miners without a successful response within freshness_hours get zero weight,
     regardless of their EMA score. This prevents stale miners from receiving
     weight based on old performance.
+    
+    UID COMPRESSION SAFETY: All dicts are keyed by miner HOTKEY (persistent SS58 address),
+    NOT by UID. UIDs are transient indices that change on UID compression/trimming.
     
     IMPORTANT: Assumes all last_success timestamps are stored as UTC naive datetimes.
     Database schema (db/schema.py) uses DateTime columns without timezone, and all
@@ -130,8 +156,8 @@ def _apply_freshness_gate(
     docs/SET_WEIGHTS_REVIEW_ANALYSIS.md section 3.
     
     Args:
-        miner_ema_scores: EMA scores keyed by node_id
-        last_success_times: Last success timestamps keyed by node_id (UTC naive)
+        miner_ema_scores: EMA scores keyed by miner hotkey (persistent SS58 address)
+        last_success_times: Last success timestamps keyed by miner hotkey (UTC naive)
         freshness_hours: Hours threshold for considering a miner stale
     
     Returns:
@@ -143,19 +169,277 @@ def _apply_freshness_gate(
     updated_scores = {}
     stale_count = 0
     
-    for node_id, ema_score in miner_ema_scores.items():
-        last_success = last_success_times.get(node_id)
+    for miner_hotkey, ema_score in miner_ema_scores.items():
+        last_success = last_success_times.get(miner_hotkey)
         
         if last_success is None or last_success < cutoff_time:
             # Miner is stale - zero out their score
-            updated_scores[node_id] = 0.0
+            updated_scores[miner_hotkey] = 0.0
             if ema_score > 0:
                 stale_count += 1
         else:
             # Miner is fresh - keep their score
-            updated_scores[node_id] = ema_score
+            updated_scores[miner_hotkey] = ema_score
     
     return updated_scores, stale_count
+
+
+def _load_file_cache() -> Dict[str, float]:
+    """Load sybil scores from the JSON file cache (cold cache)."""
+    try:
+        if _SYBIL_CACHE_FILE.exists():
+            raw = json.loads(_SYBIL_CACHE_FILE.read_text())
+            scores = {k: float(v) for k, v in raw.get("scores", {}).items()}
+            age = time.time() - raw.get("timestamp", 0)
+            logger.info(
+                f"[sybil] Loaded file cache: {len(scores)} entries, age={age:.0f}s"
+            )
+            return scores
+    except Exception as e:
+        logger.warning(f"[sybil] Could not load file cache: {e}")
+    return {}
+
+
+def _save_file_cache(scores: Dict[str, float]) -> None:
+    """Persist sybil scores to JSON file (cold cache)."""
+    try:
+        payload = {
+            "scores": scores,
+            "timestamp": time.time(),
+            "saved_at": datetime.utcnow().isoformat(),
+        }
+        _SYBIL_CACHE_FILE.write_text(json.dumps(payload, indent=2))
+    except Exception as e:
+        logger.warning(f"[sybil] Could not save file cache: {e}")
+
+
+def get_sybil_breakdown(hotkey: str) -> Optional[Dict[str, Any]]:
+    """
+    Return the full breakdown dict for *hotkey* from the last fetch.
+
+    Useful for penalty reports and diagnostics.  Returns ``None`` when no
+    breakdown has been cached yet.
+    """
+    return _sybil_breakdown_cache.get(hotkey)
+
+
+async def _fetch_sybil_scores(
+    miner_hotkeys: List[str],
+    challenge_api_url: str,
+    challenge_api_key: str,
+) -> Dict[str, float]:
+    """
+    Fetch aggregated sybil scores from the Challenge API with caching.
+
+    Cache hierarchy (fastest → slowest):
+      1. In-memory hot cache (TTL = SYBIL_SCORE_CACHE_TTL_SECONDS)
+      2. JSON file cold cache (survives validator restart)
+      3. Live fetch from Challenge API ``POST /analytics/sybil-scores/batch``
+
+    Returns hotkey → sybil_score (0.0 = clean, 1.0 = certain sybil).
+
+    On network errors the best available cache is returned; if nothing is
+    available an empty dict is returned (fail-open: no penalty on fetch failure).
+    """
+    global _sybil_score_cache, _sybil_score_cache_time, _sybil_breakdown_cache
+
+    # 1. Hot cache (in-memory)
+    if _sybil_score_cache and (time.monotonic() - _sybil_score_cache_time) < SYBIL_SCORE_CACHE_TTL_SECONDS:
+        logger.debug(
+            f"[sybil] Using hot cache ({len(_sybil_score_cache)} entries, "
+            f"age={time.monotonic() - _sybil_score_cache_time:.0f}s)"
+        )
+        return _sybil_score_cache
+
+    url = f"{challenge_api_url.rstrip('/')}/analytics/sybil-scores/batch"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                url,
+                json={"miner_hotkeys": miner_hotkeys},
+                headers={
+                    "X-API-Key": challenge_api_key,
+                    "Content-Type": "application/json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        scores: Dict[str, float] = {}
+        breakdown: Dict[str, Dict[str, Any]] = {}
+
+        for hotkey, score_data in data.get("scores", {}).items():
+            if isinstance(score_data, dict):
+                scores[hotkey] = float(score_data.get("sybil_score", 0.0))
+                # Store full breakdown for logging / penalty reports
+                breakdown[hotkey] = score_data
+            else:
+                scores[hotkey] = float(score_data)
+
+        # Update hot cache
+        _sybil_score_cache = scores
+        _sybil_score_cache_time = time.monotonic()
+        _sybil_breakdown_cache = breakdown
+
+        # Persist to file (cold cache)
+        _save_file_cache(scores)
+
+        flagged = sum(1 for s in scores.values() if s >= SYBIL_PENALTY_THRESHOLD)
+        logger.info(
+            f"[sybil] Fetched sybil scores for {len(scores)} miners "
+            f"({flagged} flagged above threshold {SYBIL_PENALTY_THRESHOLD})"
+        )
+        return scores
+
+    except Exception as e:
+        logger.warning(f"[sybil] Failed to fetch sybil scores from Challenge API: {e}")
+
+        # 2. Return stale hot cache if available
+        if _sybil_score_cache:
+            logger.info(
+                f"[sybil] Returning stale hot cache ({len(_sybil_score_cache)} entries, "
+                f"age={time.monotonic() - _sybil_score_cache_time:.0f}s)"
+            )
+            return _sybil_score_cache
+
+        # 3. Try file (cold) cache
+        file_scores = _load_file_cache()
+        if file_scores:
+            _sybil_score_cache = file_scores
+            _sybil_score_cache_time = time.monotonic()
+            return file_scores
+
+        # 4. Fail open: no penalty when we have no data at all
+        logger.warning("[sybil] No cached data available — skipping sybil penalty (fail-open)")
+        return {}
+
+
+def _apply_sybil_penalty(
+    miner_ema_scores: Dict[str, float],
+    sybil_scores: Dict[str, float],
+    serving_miners_count: int,
+) -> tuple[Dict[str, float], int, bool]:
+    """
+    Apply graduated sybil penalty to miner EMA scores.
+
+    Penalty formula (per miner):
+        penalty = min(sybil_score, SYBIL_PENALTY_MAX)   (clamped to max)
+        penalized_ema = ema_score * (1 - penalty)
+
+    Safety valve with **fallback-K restoration**:
+        If more than ``SYBIL_SAFETY_MAX_PENALIZED_FRACTION`` of serving miners
+        would be penalized, we do NOT skip penalties entirely.  Instead we
+        penalize only the **top-K worst offenders** (sorted by descending
+        sybil_score, K = max_allowed).  This prevents sybils from gaming the
+        system by mass-flooding detections to trigger a blanket skip.
+
+    Args:
+        miner_ema_scores: EMA scores keyed by hotkey (not mutated)
+        sybil_scores: Sybil scores keyed by hotkey (0.0 – 1.0)
+        serving_miners_count: Total number of serving miners (for safety valve)
+
+    Returns:
+        (updated_scores, penalized_count, safety_triggered)
+        ``safety_triggered`` is True when fallback-K was used (some miners
+        were spared that otherwise would have been penalized).
+    """
+    if not SYBIL_PENALTY_ENABLED:
+        return miner_ema_scores, 0, False
+
+    if not sybil_scores:
+        return miner_ema_scores, 0, False
+
+    # Identify candidates: miners above threshold with non-zero EMA
+    candidates = [
+        (hk, sybil_scores[hk])
+        for hk in miner_ema_scores
+        if sybil_scores.get(hk, 0.0) >= SYBIL_PENALTY_THRESHOLD
+        and miner_ema_scores[hk] > 0
+    ]
+
+    max_allowed = max(1, int(serving_miners_count * SYBIL_SAFETY_MAX_PENALIZED_FRACTION))
+    safety_triggered = len(candidates) > max_allowed
+
+    if safety_triggered:
+        # Fallback-K: sort by descending sybil_score, keep only worst K
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        spared = len(candidates) - max_allowed
+        candidates = candidates[:max_allowed]
+        logger.critical(
+            f"[sybil] SAFETY VALVE (fallback-K): {len(candidates) + spared} miners "
+            f"would be penalized, limit is {max_allowed} "
+            f"({SYBIL_SAFETY_MAX_PENALIZED_FRACTION*100:.0f}% of "
+            f"{serving_miners_count} serving). Penalizing top-{max_allowed} worst "
+            f"offenders, sparing {spared} lower-score miners."
+        )
+
+    # Build set of hotkeys to penalize
+    penalize_set = {hk for hk, _ in candidates}
+
+    # Apply graduated penalty
+    updated = {}
+    penalized_count = 0
+
+    for hotkey, ema_score in miner_ema_scores.items():
+        if hotkey in penalize_set:
+            sybil_score = sybil_scores.get(hotkey, 0.0)
+            penalty = min(sybil_score, SYBIL_PENALTY_MAX)
+            new_score = ema_score * (1.0 - penalty)
+
+            logger.info(
+                f"[sybil] Penalizing miner {hotkey[:16]}...: "
+                f"sybil_score={sybil_score:.3f}, penalty={penalty:.3f}, "
+                f"ema={ema_score:.6f} → {new_score:.6f}"
+            )
+            updated[hotkey] = new_score
+            penalized_count += 1
+        else:
+            updated[hotkey] = ema_score
+
+    return updated, penalized_count, safety_triggered
+
+
+async def _submit_penalty_report(
+    validator_hotkey: str,
+    penalty_actions: List[Dict[str, Any]],
+    challenge_api_url: str,
+    challenge_api_key: str,
+) -> None:
+    """
+    Fire-and-forget: POST the penalty report to the Challenge API.
+
+    This is called via ``asyncio.create_task`` so failures are logged but
+    never block or crash the weight-setting pipeline.
+    """
+    url = f"{challenge_api_url.rstrip('/')}/analytics/penalty-report"
+    payload = {
+        "validator_hotkey": validator_hotkey,
+        "timestamp": datetime.utcnow().isoformat(),
+        "penalties": penalty_actions,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={
+                    "X-API-Key": challenge_api_key,
+                    "Content-Type": "application/json",
+                },
+            )
+        if resp.status_code == 201:
+            logger.debug(
+                f"[sybil] Penalty report submitted ({len(penalty_actions)} actions)"
+            )
+        else:
+            logger.warning(
+                f"[sybil] Penalty report failed: HTTP {resp.status_code} — "
+                f"{resp.text[:200]}"
+            )
+    except Exception as e:
+        logger.warning(f"[sybil] Could not submit penalty report: {e}")
 
 
 async def _set_weights_with_sdk(
@@ -465,14 +749,88 @@ async def set_weights(
                 f"in {operation_mode} mode"
             )
         
+        # 9.5. Fetch sybil scores and apply penalty
+        serving_hotkeys = [node.hotkey for node in serving_miners]
+        pre_penalty_scores = dict(miner_ema_scores)  # snapshot for summary
+        sybil_scores = await _fetch_sybil_scores(
+            miner_hotkeys=serving_hotkeys,
+            challenge_api_url=config.challenge_api_url,
+            challenge_api_key=config.challenge_api_key,
+        )
+        if sybil_scores:
+            logger.info(
+                f"[set_weights] Fetched sybil scores for {len(sybil_scores)} miners "
+                f"from Challenge API."
+            )
+            miner_ema_scores, penalized_count, safety_triggered = _apply_sybil_penalty(
+                miner_ema_scores=miner_ema_scores,
+                sybil_scores=sybil_scores,
+                serving_miners_count=len(serving_miners),
+            )
+
+            # --- Detailed penalty summary logging ---
+            graduated_count = 0
+            zeroed_count = 0
+            penalty_actions: List[Dict[str, Any]] = []
+
+            if penalized_count > 0:
+                # Build a UID lookup for informational logging
+                hotkey_to_uid = {n.hotkey: n.node_id for n in serving_miners}
+
+                for hk in miner_ema_scores:
+                    old_ema = pre_penalty_scores.get(hk, 0.0)
+                    new_ema = miner_ema_scores[hk]
+                    if old_ema > 0 and new_ema < old_ema:
+                        if new_ema > 0:
+                            graduated_count += 1
+                            p_type = "graduated"
+                        else:
+                            zeroed_count += 1
+                            p_type = "zeroed"
+                        penalty_actions.append({
+                            "miner_hotkey": hk,
+                            "miner_uid": hotkey_to_uid.get(hk),
+                            "penalty_type": p_type,
+                            "sybil_score": sybil_scores.get(hk, 0.0),
+                        })
+
+                logger.info(
+                    f"[set_weights] Sybil penalty summary: "
+                    f"penalized={penalized_count}, graduated={graduated_count}, "
+                    f"zeroed={zeroed_count}, safety_valve={'YES' if safety_triggered else 'no'}"
+                )
+
+            if safety_triggered:
+                logger.critical(
+                    "[set_weights] Sybil safety valve (fallback-K) was triggered — "
+                    "only the worst offenders were penalized this round."
+                )
+
+            # Fire-and-forget: submit penalty report to Challenge API
+            if penalty_actions:
+                asyncio.create_task(
+                    _submit_penalty_report(
+                        validator_hotkey=hotkey_ss58,
+                        penalty_actions=penalty_actions,
+                        challenge_api_url=config.challenge_api_url,
+                        challenge_api_key=config.challenge_api_key,
+                    )
+                )
+        else:
+            logger.debug("[set_weights] No sybil scores available — skipping penalty step.")
+        
         # 10. Build weight vectors for serving miners only
+        # UID COMPRESSION SAFETY: EMA scores are keyed by HOTKEY (persistent SS58 address).
+        # We look up each node's score by hotkey, then build the UID-based weight vector
+        # that the chain requires for set_weights().
         uids: List[int] = []
         weights_list: List[float] = []
         miners_with_weight = 0
         
         for node in serving_miners:
             node_id = node.node_id
-            score = miner_ema_scores.get(node_id, 0.0)
+            # Look up EMA score by HOTKEY (persistent identity), not by UID
+            score = miner_ema_scores.get(node.hotkey, 0.0)
             
             uids.append(node_id)
             weights_list.append(score)
@@ -533,9 +891,10 @@ async def set_weights(
         )
         
         # Log detailed weight information (at debug level to avoid spam)
+        # NOTE: EMA scores and last_success_times are keyed by hotkey (persistent identity)
         for uid, weight, node in zip(uids, weights_list, serving_miners):
-            ema_score = miner_ema_scores.get(uid, 0.0)
-            last_success = last_success_times.get(uid)
+            ema_score = miner_ema_scores.get(node.hotkey, 0.0)
+            last_success = last_success_times.get(node.hotkey)
             # Format datetime as ISO for better log readability and parseability
             freshness_str = f", last_success={last_success.isoformat()}" if last_success else ", no_success_recorded"
             logger.debug(

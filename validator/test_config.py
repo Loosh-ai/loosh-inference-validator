@@ -110,10 +110,8 @@ def create_test_validator_config(yaml_config: Optional[Dict[str, Any]] = None) -
         'HOTKEY_NAME': yaml_config.get('wallet', {}).get('hotkey', 'test_validator'),
         'DB_PATH': yaml_config.get('database', {}).get('path', './test_validator.db'),
         'USERS_DB_PATH': yaml_config.get('database', {}).get('users_path', './test_users.db'),
-        'DEFAULT_MODEL': yaml_config.get('llm', {}).get('default_model', 'microsoft/Phi3-512'),
-        'DEFAULT_MAX_TOKENS': str(yaml_config.get('llm', {}).get('default_max_tokens', 128)),
-        'DEFAULT_TEMPERATURE': str(yaml_config.get('llm', {}).get('default_temperature', 0.7)),
-        'DEFAULT_TOP_P': str(yaml_config.get('llm', {}).get('default_top_p', 0.95)),
+        # NOTE: LLM behavior params (DEFAULT_MODEL, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
+        # DEFAULT_TOP_P) are now hard-coded in validator/internal_config.py for network consistency.
         'HEATMAP_UPLOAD_URL': yaml_config.get('evaluation', {}).get('heatmap_upload_url', 'http://localhost:8080/upload'),
         'LLM_API_URL': yaml_config.get('evaluation', {}).get('llm_api_url', 'https://your-inference-endpoint/v1/chat/completions'),
         'LLM_MODEL': yaml_config.get('evaluation', {}).get('llm_model', 'microsoft/Phi3-512'),
@@ -167,7 +165,7 @@ def test_bittensor_config():
         print(f"  - Network: {validator_config.subtensor_network}")
         print(f"  - Wallet: {validator_config.wallet_name}/{validator_config.hotkey_name}")
         print(f"  - Challenge Interval: {INTERNAL_CONFIG.challenge_interval} (internal)")
-        print(f"  - Default Model: {validator_config.default_model}")
+        print(f"  - Default Model: {INTERNAL_CONFIG.DEFAULT_MODEL} (internal)")
         
         # Test test-specific settings
         test_settings = yaml_config.get('test', {})

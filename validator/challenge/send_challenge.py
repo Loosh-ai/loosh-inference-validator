@@ -13,6 +13,7 @@ from validator.challenge.challenge_types import (
 from validator.db.operations import DatabaseManager
 from validator.challenge_api.models import Challenge
 from validator.config import ValidatorConfig
+from validator.internal_config import FIBER_KEY_TTL_SECONDS, FIBER_HANDSHAKE_TIMEOUT_SECONDS
 from validator.timing import PipelineTiming, PipelineStages
 
 # Global Fiber client for miner communication
@@ -26,8 +27,8 @@ def get_miner_fiber_client(validator_hotkey_ss58: str, config: ValidatorConfig):
         _miner_fiber_client = MinerFiberClient(
             validator_hotkey_ss58=validator_hotkey_ss58,
             config=config,
-            key_ttl_seconds=config.fiber_key_ttl_seconds,
-            handshake_timeout_seconds=config.fiber_handshake_timeout_seconds
+            key_ttl_seconds=FIBER_KEY_TTL_SECONDS,
+            handshake_timeout_seconds=FIBER_HANDSHAKE_TIMEOUT_SECONDS
         )
     return _miner_fiber_client
 
