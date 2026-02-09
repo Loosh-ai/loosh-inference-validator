@@ -8,14 +8,37 @@ import base64
 import json
 import time
 import uuid
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet
 from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Module-level validator keypair storage
+# ---------------------------------------------------------------------------
+# Set once at startup from main.py so every ValidatorFiberClient instance
+# can sign handshake messages without threading the keypair through every
+# call-site.
+_validator_keypair: Optional[Any] = None  # substrateinterface.Keypair
+
+
+def set_validator_keypair(keypair: Any) -> None:
+    """Store the validator sr25519 keypair for Fiber signing (call once at startup)."""
+    global _validator_keypair
+    _validator_keypair = keypair
+    logger.info(
+        f"Validator keypair set for Fiber signing: {keypair.ss58_address[:16]}..."
+    )
+
+
+def get_validator_keypair() -> Optional[Any]:
+    """Return the cached validator keypair (or None if not yet set)."""
+    return _validator_keypair
 
 
 class ValidatorFiberClient:
@@ -28,7 +51,7 @@ class ValidatorFiberClient:
     def __init__(
         self,
         validator_hotkey_ss58: str,
-        private_key: Optional[rsa.RSAPrivateKey] = None,
+        keypair: Optional[Any] = None,
         key_ttl_seconds: int = 3600,
         handshake_timeout_seconds: int = 30
     ):
@@ -37,12 +60,14 @@ class ValidatorFiberClient:
         
         Args:
             validator_hotkey_ss58: Validator's SS58 address (hotkey)
-            private_key: Optional RSA private key for signing (if None, will need to be loaded)
+            keypair: Optional sr25519 Keypair for signing handshake messages.
+                     If None, falls back to the module-level keypair set via
+                     ``set_validator_keypair()``.
             key_ttl_seconds: Time-to-live for symmetric keys (default: 1 hour)
             handshake_timeout_seconds: Timeout for handshake operations
         """
         self.validator_hotkey_ss58 = validator_hotkey_ss58
-        self.private_key = private_key
+        self.keypair = keypair or get_validator_keypair()
         self.key_ttl_seconds = key_ttl_seconds
         self.handshake_timeout_seconds = handshake_timeout_seconds
         
@@ -52,19 +77,12 @@ class ValidatorFiberClient:
         
         # Cache: {challenge_api_endpoint: (fernet, key_uuid, handshake_time)}
         self._key_cache: Dict[str, Tuple[Fernet, str, float]] = {}
-    
-    def _load_private_key_from_hotkey(self) -> Optional[rsa.RSAPrivateKey]:
-        """
-        Load private key from hotkey (for signing).
         
-        This is a placeholder - actual implementation would load from Bittensor wallet.
-        """
-        if self.private_key:
-            return self.private_key
-        
-        # TODO: Load from Bittensor wallet at ~/.bittensor/wallets
-        logger.warning("Private key not provided - signing will be skipped")
-        return None
+        if not self.keypair:
+            logger.warning(
+                "ValidatorFiberClient created without keypair — "
+                "handshake signatures will be empty (reduced security)"
+            )
     
     async def _fetch_challenge_api_public_key(
         self,
@@ -141,14 +159,18 @@ class ValidatorFiberClient:
             # Create Fernet instance
             fernet = Fernet(symmetric_key)
             
-            # Sign request (if private key available)
+            # Sign request with sr25519 keypair (Bittensor wallet)
             signature = ""
-            private_key = self._load_private_key_from_hotkey()
-            if private_key:
-                # Sign: timestamp + validator_hotkey_ss58 + key_uuid
-                message = f"{timestamp}.{self.validator_hotkey_ss58}.{key_uuid}"
-                # TODO: Implement proper signing with Bittensor keypair
-                signature = "placeholder_signature"
+            if self.keypair:
+                try:
+                    message = f"{timestamp}.{self.validator_hotkey_ss58}.{key_uuid}"
+                    sig_bytes = self.keypair.sign(message.encode("utf-8"))
+                    signature = sig_bytes.hex()
+                except Exception as e:
+                    logger.warning(f"Failed to sign handshake message: {e}")
+                    signature = ""
+            else:
+                logger.debug("No keypair available — handshake will be unsigned")
             
             # Send key exchange request
             url = f"{challenge_api_endpoint.rstrip('/')}/fiber/key-exchange"

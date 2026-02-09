@@ -54,7 +54,6 @@ async def update_challenge_response(
         if cache_key not in _fiber_client_cache:
             _fiber_client_cache[cache_key] = ValidatorFiberClient(
                 validator_hotkey_ss58=validator_hotkey,
-                private_key=None,  # TODO: Load from Bittensor wallet
                 key_ttl_seconds=3600,
                 handshake_timeout_seconds=30
             )
@@ -151,7 +150,6 @@ async def submit_response_batch(
             if cache_key not in _fiber_client_cache:
                 _fiber_client_cache[cache_key] = ValidatorFiberClient(
                     validator_hotkey_ss58=batch.validator_hotkey,
-                    private_key=None,  # TODO: Load from Bittensor wallet
                     key_ttl_seconds=3600,
                     handshake_timeout_seconds=30
                 )

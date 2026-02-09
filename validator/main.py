@@ -169,6 +169,10 @@ async def main_loop():
         return
 
     logger.info(f"Loaded hotkey: {hotkey.ss58_address}")
+    
+    # Make the keypair available to Fiber clients for sr25519 signing
+    from validator.network.fiber_client import set_validator_keypair
+    set_validator_keypair(hotkey)
 
     # Initialize database
     try:
@@ -265,6 +269,8 @@ async def main_loop():
     if not test_mode:
         try:
             inference_validator = InferenceValidator(db_manager=db_manager)
+            # Seed entity voting cap node map with initial metagraph snapshot
+            inference_validator.update_node_map(nodes)
             logger.info("InferenceValidator initialized - evaluation and heatmap generation enabled")
         except Exception as e:
             logger.error(f"Failed to initialize InferenceValidator: {e}. Evaluation will be disabled.", exc_info=True)
@@ -342,6 +348,11 @@ async def main_loop():
                     # Update the full metagraph snapshot for network reporter
                     nonlocal _all_metagraph_nodes
                     _all_metagraph_nodes = list(refreshed_nodes)
+                    
+                    # Update entity voting cap node map on InferenceValidator
+                    if inference_validator is not None:
+                        inference_validator.update_node_map(refreshed_nodes)
+                    
                     logger.info(f"Metagraph refreshed: {len(refreshed_nodes)} nodes (availability worker updated)")
                     
                 except Exception as e:
@@ -643,8 +654,8 @@ async def main_loop():
                                 logger.error(f"Error sending challenge to node {node.node_id}: {str(e)}")
                         
                         # Process challenge results (submits response when ready - completion order)
-                        # Use configured challenge timeout or default to 120s
-                        challenge_timeout = getattr(config, 'challenge_timeout_seconds', 120)
+                        # Use the centralized internal config for challenge timeout
+                        challenge_timeout = INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS
                         await process_challenge_results(
                             new_challenge_tasks,
                             client,

@@ -201,14 +201,19 @@ def _load_file_cache() -> Dict[str, float]:
 
 
 def _save_file_cache(scores: Dict[str, float]) -> None:
-    """Persist sybil scores to JSON file (cold cache)."""
+    """Persist sybil scores to JSON file (cold cache) using atomic write."""
     try:
         payload = {
             "scores": scores,
             "timestamp": time.time(),
             "saved_at": datetime.utcnow().isoformat(),
         }
-        _SYBIL_CACHE_FILE.write_text(json.dumps(payload, indent=2))
+        # Atomic write: write to temp file then rename to prevent corruption
+        # on crash mid-write.  rename() is atomic on POSIX when src and dst
+        # are on the same filesystem.
+        tmp_path = _SYBIL_CACHE_FILE.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2))
+        tmp_path.replace(_SYBIL_CACHE_FILE)
     except Exception as e:
         logger.warning(f"[sybil] Could not save file cache: {e}")
 
@@ -565,6 +570,9 @@ async def set_weights(
         Exception: If weight setting fails (caller should handle retries)
     """
     config = get_validator_config()
+    
+    subtensor = None
+    substrate = None
     
     try:
         # 1. Initialize Bittensor SDK Subtensor connection
@@ -932,3 +940,17 @@ async def set_weights(
         logger.error(f"[set_weights] Error setting weights: {str(e)}")
         logger.exception("[set_weights] Full error traceback:")
         raise
+    finally:
+        # Ensure chain connections are closed to prevent resource leaks
+        if substrate is not None:
+            try:
+                substrate.close()
+            except Exception:
+                pass
+        if subtensor is not None:
+            try:
+                # Subtensor wraps a SubstrateInterface; close it explicitly
+                if hasattr(subtensor, 'substrate') and subtensor.substrate is not None:
+                    subtensor.substrate.close()
+            except Exception:
+                pass

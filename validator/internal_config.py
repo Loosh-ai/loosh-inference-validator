@@ -217,6 +217,139 @@ class InternalConfig:
     QUALITY_COMPLEXITY_ENABLED: bool = True
     
     # =========================================================================
+    # Embedding Performance Parameters
+    # =========================================================================
+    
+    # Maximum sequence length for document-level embeddings.
+    EMBEDDING_MAX_SEQ_LENGTH_DOC: int = 256
+    
+    # Maximum sequence length for sentence-level embeddings.
+    EMBEDDING_MAX_SEQ_LENGTH_SENTENCE: int = 128
+    
+    # Batch size for document-level embeddings.
+    EMBEDDING_BATCH_SIZE_DOC: int = 128
+    
+    # Batch size for sentence-level embeddings (shorter texts → larger batch).
+    EMBEDDING_BATCH_SIZE_SENTENCE: int = 256
+    
+    # Only compute sentence-level features for responses whose doc-level
+    # cosine similarity with the prompt exceeds this gate.
+    # Reduces GPU work by ~50% on average workloads.
+    SENTENCE_LEVEL_RELEVANCE_GATE: float = 0.5
+    
+    # =========================================================================
+    # Quality Scoring Weights (must sum to ~1.0)
+    # =========================================================================
+    
+    QUALITY_RELEVANCE_WEIGHT: float = 0.25
+    QUALITY_DENSITY_WEIGHT: float = 0.15
+    QUALITY_SPECIFICITY_WEIGHT: float = 0.15
+    QUALITY_COHERENCE_WEIGHT: float = 0.15
+    QUALITY_COMPLETENESS_WEIGHT: float = 0.15
+    QUALITY_COMPLEXITY_WEIGHT: float = 0.15
+    
+    # =========================================================================
+    # Quality Enhancement Sub-Parameters
+    # =========================================================================
+    
+    # Coherence: local (adjacent) vs global (centroid) blend weights.
+    QUALITY_COHERENCE_LOCAL_WEIGHT: float = 0.6
+    QUALITY_COHERENCE_GLOBAL_WEIGHT: float = 0.4
+    
+    # Coherence: similarity below this between adjacent sentences counts as a "break".
+    QUALITY_BREAK_THRESHOLD: float = 0.25
+    
+    # Relevance: blend of doc-level, sentence-level, and coverage components.
+    QUALITY_RELEVANCE_DOC_BLEND: float = 0.4
+    QUALITY_RELEVANCE_SENTENCE_BLEND: float = 0.4
+    QUALITY_RELEVANCE_COVERAGE_BLEND: float = 0.2
+    
+    # Complexity: quality gates — complexity score is zeroed when these fail.
+    QUALITY_COMPLEXITY_RELEVANCE_GATE: float = 0.4
+    QUALITY_COMPLEXITY_COHERENCE_GATE: float = 0.3
+    
+    # Complexity: semantic step clustering parameters.
+    QUALITY_COMPLEXITY_TARGET_STEPS: int = 4
+    QUALITY_COMPLEXITY_SCALE: float = 2.0
+    QUALITY_COMPLEXITY_DISTANCE_THRESHOLD: float = 0.7
+    QUALITY_COMPLEXITY_STEP_WEIGHT: float = 0.6
+    QUALITY_COMPLEXITY_NOVELTY_WEIGHT: float = 0.4
+    
+    # =========================================================================
+    # Sybil Detection Thresholds (MPNet-calibrated)
+    # =========================================================================
+    
+    # Minimum floor for adaptive high-similarity threshold.
+    # MPNet: 0.80 | MiniLM: 0.85
+    SYBIL_MIN_HIGH_THRESHOLD: float = 0.80
+    
+    # Minimum floor for adaptive very-high-similarity threshold.
+    # MPNet: 0.88 | MiniLM: 0.92
+    SYBIL_MIN_VERY_HIGH_THRESHOLD: float = 0.88
+    
+    # Percentile of similarity distribution used for adaptive high threshold.
+    SYBIL_HIGH_SIMILARITY_PERCENTILE: float = 99.9
+    
+    # Percentile of similarity distribution used for adaptive very-high threshold.
+    SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE: float = 99.99
+    
+    # Minimum response length (characters) for sybil pair detection.
+    # Short/canonical answers are excluded to reduce false positives.
+    SYBIL_MIN_RESPONSE_LENGTH: int = 50
+    
+    # Minimum pairwise similarity within a group for it to be valid.
+    SYBIL_MIN_INTERNAL_SIMILARITY: float = 0.90
+    
+    # Multi-view fusion: semantic similarity threshold.
+    SYBIL_FUSION_SEMANTIC_THRESHOLD: float = 0.92
+    
+    # Multi-view fusion: lexical (TF-IDF) similarity threshold.
+    SYBIL_FUSION_LEXICAL_THRESHOLD: float = 0.85
+    
+    # Multi-view fusion: structural similarity threshold.
+    SYBIL_FUSION_STRUCTURE_THRESHOLD: float = 0.80
+    
+    # Sentence-trajectory analysis: similarity threshold for flagging pairs.
+    SYBIL_TRAJECTORY_THRESHOLD: float = 0.85
+    
+    # Sentence-trajectory analysis: number of KMeans clusters per response.
+    SYBIL_TRAJECTORY_N_CLUSTERS: int = 5
+    
+    # =========================================================================
+    # Migration Parameters (temporary — remove after migration completes)
+    # =========================================================================
+    
+    # Run both MiniLM and MPNet models side-by-side for comparison logging.
+    PARALLEL_VALIDATION: bool = False
+    
+    # Fallback model if primary model fails to load.
+    FALLBACK_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    
+    # =========================================================================
+    # Entity-Based Voting Caps
+    # =========================================================================
+    # Limits how much influence a suspected sybil entity can exert during
+    # consensus formation.  An "entity" is a group of miners sharing the same
+    # IP address (strongest signal) or coldkey (weaker signal).
+    #
+    # When enabled, each entity with N miners gets at most
+    # ENTITY_MAX_VOTES effective votes regardless of N.  Individual miners
+    # in the group receive a weight multiplier of min(1.0, max_votes / N).
+    # Solo miners on unique IPs/coldkeys are completely unaffected.
+    
+    # Master switch — set to False to disable entity voting caps entirely.
+    ENTITY_VOTING_CAPS_ENABLED: bool = True
+    
+    # Maximum effective votes per entity group regardless of group size.
+    # E.g. 1.5 means a group of 5 miners sharing an IP collectively gets
+    # at most 1.5 effective votes (each miner weighted at 1.5/5 = 0.3).
+    ENTITY_MAX_VOTES: float = 1.5
+    
+    # Minimum group size to trigger capping.  Groups smaller than this are
+    # treated as solo miners and retain full weight.
+    ENTITY_MIN_GROUP_SIZE: int = 2
+    
+    # =========================================================================
     # Sybil Penalty Parameters
     # =========================================================================
     
@@ -323,9 +456,61 @@ QUALITY_PROMPT_COVERAGE_ENABLED = INTERNAL_CONFIG.QUALITY_PROMPT_COVERAGE_ENABLE
 QUALITY_COVERAGE_THRESHOLD = INTERNAL_CONFIG.QUALITY_COVERAGE_THRESHOLD
 QUALITY_COMPLEXITY_ENABLED = INTERNAL_CONFIG.QUALITY_COMPLEXITY_ENABLED
 
+# Entity-Based Voting Caps
+ENTITY_VOTING_CAPS_ENABLED = INTERNAL_CONFIG.ENTITY_VOTING_CAPS_ENABLED
+ENTITY_MAX_VOTES = INTERNAL_CONFIG.ENTITY_MAX_VOTES
+ENTITY_MIN_GROUP_SIZE = INTERNAL_CONFIG.ENTITY_MIN_GROUP_SIZE
+
 # Sybil Penalty
 SYBIL_PENALTY_ENABLED = INTERNAL_CONFIG.SYBIL_PENALTY_ENABLED
 SYBIL_PENALTY_MAX = INTERNAL_CONFIG.SYBIL_PENALTY_MAX
 SYBIL_PENALTY_THRESHOLD = INTERNAL_CONFIG.SYBIL_PENALTY_THRESHOLD
 SYBIL_SAFETY_MAX_PENALIZED_FRACTION = INTERNAL_CONFIG.SYBIL_SAFETY_MAX_PENALIZED_FRACTION
 SYBIL_SCORE_CACHE_TTL_SECONDS = INTERNAL_CONFIG.SYBIL_SCORE_CACHE_TTL_SECONDS
+
+# Embedding Performance
+EMBEDDING_MAX_SEQ_LENGTH_DOC = INTERNAL_CONFIG.EMBEDDING_MAX_SEQ_LENGTH_DOC
+EMBEDDING_MAX_SEQ_LENGTH_SENTENCE = INTERNAL_CONFIG.EMBEDDING_MAX_SEQ_LENGTH_SENTENCE
+EMBEDDING_BATCH_SIZE_DOC = INTERNAL_CONFIG.EMBEDDING_BATCH_SIZE_DOC
+EMBEDDING_BATCH_SIZE_SENTENCE = INTERNAL_CONFIG.EMBEDDING_BATCH_SIZE_SENTENCE
+SENTENCE_LEVEL_RELEVANCE_GATE = INTERNAL_CONFIG.SENTENCE_LEVEL_RELEVANCE_GATE
+
+# Quality Scoring Weights
+QUALITY_RELEVANCE_WEIGHT = INTERNAL_CONFIG.QUALITY_RELEVANCE_WEIGHT
+QUALITY_DENSITY_WEIGHT = INTERNAL_CONFIG.QUALITY_DENSITY_WEIGHT
+QUALITY_SPECIFICITY_WEIGHT = INTERNAL_CONFIG.QUALITY_SPECIFICITY_WEIGHT
+QUALITY_COHERENCE_WEIGHT = INTERNAL_CONFIG.QUALITY_COHERENCE_WEIGHT
+QUALITY_COMPLETENESS_WEIGHT = INTERNAL_CONFIG.QUALITY_COMPLETENESS_WEIGHT
+QUALITY_COMPLEXITY_WEIGHT = INTERNAL_CONFIG.QUALITY_COMPLEXITY_WEIGHT
+
+# Quality Enhancement Sub-Parameters
+QUALITY_COHERENCE_LOCAL_WEIGHT = INTERNAL_CONFIG.QUALITY_COHERENCE_LOCAL_WEIGHT
+QUALITY_COHERENCE_GLOBAL_WEIGHT = INTERNAL_CONFIG.QUALITY_COHERENCE_GLOBAL_WEIGHT
+QUALITY_BREAK_THRESHOLD = INTERNAL_CONFIG.QUALITY_BREAK_THRESHOLD
+QUALITY_RELEVANCE_DOC_BLEND = INTERNAL_CONFIG.QUALITY_RELEVANCE_DOC_BLEND
+QUALITY_RELEVANCE_SENTENCE_BLEND = INTERNAL_CONFIG.QUALITY_RELEVANCE_SENTENCE_BLEND
+QUALITY_RELEVANCE_COVERAGE_BLEND = INTERNAL_CONFIG.QUALITY_RELEVANCE_COVERAGE_BLEND
+QUALITY_COMPLEXITY_RELEVANCE_GATE = INTERNAL_CONFIG.QUALITY_COMPLEXITY_RELEVANCE_GATE
+QUALITY_COMPLEXITY_COHERENCE_GATE = INTERNAL_CONFIG.QUALITY_COMPLEXITY_COHERENCE_GATE
+QUALITY_COMPLEXITY_TARGET_STEPS = INTERNAL_CONFIG.QUALITY_COMPLEXITY_TARGET_STEPS
+QUALITY_COMPLEXITY_SCALE = INTERNAL_CONFIG.QUALITY_COMPLEXITY_SCALE
+QUALITY_COMPLEXITY_DISTANCE_THRESHOLD = INTERNAL_CONFIG.QUALITY_COMPLEXITY_DISTANCE_THRESHOLD
+QUALITY_COMPLEXITY_STEP_WEIGHT = INTERNAL_CONFIG.QUALITY_COMPLEXITY_STEP_WEIGHT
+QUALITY_COMPLEXITY_NOVELTY_WEIGHT = INTERNAL_CONFIG.QUALITY_COMPLEXITY_NOVELTY_WEIGHT
+
+# Sybil Detection Thresholds
+SYBIL_MIN_HIGH_THRESHOLD = INTERNAL_CONFIG.SYBIL_MIN_HIGH_THRESHOLD
+SYBIL_MIN_VERY_HIGH_THRESHOLD = INTERNAL_CONFIG.SYBIL_MIN_VERY_HIGH_THRESHOLD
+SYBIL_HIGH_SIMILARITY_PERCENTILE = INTERNAL_CONFIG.SYBIL_HIGH_SIMILARITY_PERCENTILE
+SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE = INTERNAL_CONFIG.SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE
+SYBIL_MIN_RESPONSE_LENGTH = INTERNAL_CONFIG.SYBIL_MIN_RESPONSE_LENGTH
+SYBIL_MIN_INTERNAL_SIMILARITY = INTERNAL_CONFIG.SYBIL_MIN_INTERNAL_SIMILARITY
+SYBIL_FUSION_SEMANTIC_THRESHOLD = INTERNAL_CONFIG.SYBIL_FUSION_SEMANTIC_THRESHOLD
+SYBIL_FUSION_LEXICAL_THRESHOLD = INTERNAL_CONFIG.SYBIL_FUSION_LEXICAL_THRESHOLD
+SYBIL_FUSION_STRUCTURE_THRESHOLD = INTERNAL_CONFIG.SYBIL_FUSION_STRUCTURE_THRESHOLD
+SYBIL_TRAJECTORY_THRESHOLD = INTERNAL_CONFIG.SYBIL_TRAJECTORY_THRESHOLD
+SYBIL_TRAJECTORY_N_CLUSTERS = INTERNAL_CONFIG.SYBIL_TRAJECTORY_N_CLUSTERS
+
+# Migration
+PARALLEL_VALIDATION = INTERNAL_CONFIG.PARALLEL_VALIDATION
+FALLBACK_MODEL = INTERNAL_CONFIG.FALLBACK_MODEL

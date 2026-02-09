@@ -86,6 +86,7 @@ class ConsensusEngine:
         prompt_embedding: Optional[np.ndarray] = None,
         quality_scorer: Optional[EvaluationQualityScorer] = None,
         embed_fn: Optional[Callable] = None,
+        entity_weights: Optional[np.ndarray] = None,
     ):
         self.original_prompt = original_prompt
         self.all_responses = responses
@@ -109,6 +110,18 @@ class ConsensusEngine:
         self.quality_scorer = quality_scorer
         self.embed_fn = embed_fn
         
+        # Entity-based voting caps: per-response weight multipliers in (0, 1].
+        # When present, limits how much influence a suspected sybil entity can
+        # exert during consensus formation.  ``None`` means no capping.
+        self.entity_weights: Optional[np.ndarray] = (
+            np.array(entity_weights, dtype=np.float64)
+            if entity_weights is not None
+            else None
+        )
+        self.all_entity_weights: Optional[np.ndarray] = (
+            self.entity_weights.copy() if self.entity_weights is not None else None
+        )
+        
         # Store quality scores for later use
         self.quality_scores = None
         # Per-response quality breakdowns (populated by enhanced scorer)
@@ -124,6 +137,14 @@ class ConsensusEngine:
         self.labels = [l for i, l in enumerate(self.labels) if mask[i]]
         if self.polarities:
             self.polarities = [p for i, p in enumerate(self.polarities) if mask[i]]
+        # Keep quality_scores and quality_breakdowns in sync with filtered responses
+        if self.quality_scores is not None and len(self.quality_scores) == len(mask):
+            self.quality_scores = self.quality_scores[mask]
+        if self.quality_breakdowns is not None and len(self.quality_breakdowns) == len(mask):
+            self.quality_breakdowns = [b for i, b in enumerate(self.quality_breakdowns) if mask[i]]
+        # Keep entity weights in sync with filtered responses
+        if self.entity_weights is not None and len(self.entity_weights) == len(mask):
+            self.entity_weights = self.entity_weights[mask]
 
     def _apply_outlier_filter(self, sim_matrix: np.ndarray) -> np.ndarray:
         """
@@ -247,11 +268,26 @@ class ConsensusEngine:
         return cosine_similarity(self.embeddings)
 
     def _apply_basic_scoring(self, sim_matrix: np.ndarray) -> tuple[float, float]:
+        """Compute unweighted (or entity-weighted) mean & std of pairwise similarities.
+
+        When ``self.entity_weights`` is set, pair weights are the product of
+        both responses' entity caps.  This ensures sybil groups contribute
+        proportionally even in the fallback scoring path.
+        """
         if len(self.embeddings) < 2:
             return 0.0, 0.0
         i, j = np.triu_indices(len(sim_matrix), k=1)
         sims = sim_matrix[i, j]
-        return np.mean(sims), np.std(sims)
+
+        # Apply entity weights if available
+        if self.entity_weights is not None and len(self.entity_weights) == len(sim_matrix):
+            pair_weights = np.outer(self.entity_weights, self.entity_weights)[i, j]
+            if np.sum(pair_weights) > 0:
+                w_mean = np.average(sims, weights=pair_weights)
+                w_var = np.average((sims - w_mean) ** 2, weights=pair_weights)
+                return float(w_mean), float(np.sqrt(w_var))
+
+        return float(np.mean(sims)), float(np.std(sims))
     
     def _apply_quality_weighted_scoring(self, sim_matrix: np.ndarray, config: ConsensusConfig) -> tuple[float, float]:
         """
@@ -260,6 +296,10 @@ class ConsensusEngine:
         
         This prevents garbage consensus by ensuring low-quality similar responses
         don't dominate the consensus calculation.
+        
+        When entity weights are present, they are multiplied into the quality
+        weight matrix so that sybil entities cannot inflate consensus by
+        contributing many identical responses.
         """
         if len(self.embeddings) < 2:
             return 0.0, 0.0
@@ -272,6 +312,12 @@ class ConsensusEngine:
         # Weight each similarity by the product of both responses' quality scores
         # This ensures both responses in a pair must be high quality to contribute strongly
         quality_weights = np.outer(self.quality_scores, self.quality_scores)
+        
+        # Incorporate entity weights: multiply each response's contribution
+        # by its entity cap so sybil groups cannot dominate the consensus score.
+        if self.entity_weights is not None and len(self.entity_weights) == len(self.embeddings):
+            entity_pair_weights = np.outer(self.entity_weights, self.entity_weights)
+            quality_weights = quality_weights * entity_pair_weights
         
         # Get upper triangle indices (excluding diagonal)
         i, j = np.triu_indices(len(sim_matrix), k=1)
@@ -868,12 +914,21 @@ class ConsensusEngine:
                 diversity_bonus
             )
             
+            # Apply entity voting cap: scale down the composite score for
+            # miners in sybil entity groups so they cannot accumulate
+            # outsized influence on emissions allocation.
+            entity_cap = 1.0
+            if self.entity_weights is not None and i < len(self.entity_weights):
+                entity_cap = float(self.entity_weights[i])
+                composite_score *= entity_cap
+            
             scores[label] = float(composite_score)
             
             logger.debug(
                 f"[SCORING] Response {label}: similarity={base_score:.3f}, "
                 f"quality={quality_scores_array[i]:.3f}, consensus={consensus_bonus:.3f}, "
-                f"diversity={diversity_bonus:.3f}, total={composite_score:.3f}"
+                f"diversity={diversity_bonus:.3f}, entity_cap={entity_cap:.3f}, "
+                f"total={composite_score:.3f}"
             )
         
         # Also score responses that were filtered out (out of consensus)
@@ -906,6 +961,11 @@ class ConsensusEngine:
                         quality_score +
                         confidence_score
                     )
+                    
+                    # Apply entity cap for out-of-consensus responses too
+                    if self.all_entity_weights is not None and orig_idx < len(self.all_entity_weights):
+                        composite_score *= float(self.all_entity_weights[orig_idx])
+                    
                     scores[label] = float(composite_score)
                 else:
                     scores[label] = 0.0
@@ -1018,7 +1078,7 @@ class ConsensusEngine:
                 challenge_id=config.challenge_id,
                 correlation_id=config.correlation_id
             )
-            if config.generate_quality_plot and config.apply_quality_filter:
+            if config.generate_quality_plot and (config.enable_semantic_quality or config.apply_quality_filter):
                 quality_path = self._generate_quality_plot(actual_heatmap_path)
 
         in_consensus = {l: r for l, r in zip(self.labels, self.responses)}

@@ -20,12 +20,47 @@ from validator.internal_config import (
     ENABLE_QUALITY_PLOTS,
     EMBEDDING_FP16_ENABLED,
     EMBEDDING_SENTENCE_LEVEL,
+    EMBEDDING_MAX_SEQ_LENGTH_DOC,
+    EMBEDDING_BATCH_SIZE_DOC,
+    EMBEDDING_BATCH_SIZE_SENTENCE,
+    SENTENCE_LEVEL_RELEVANCE_GATE,
     QUALITY_SENTENCE_RELEVANCE_WEIGHT,
     QUALITY_MIN_SENTENCE_WORDS,
     QUALITY_COHERENCE_EMBEDDING_CHAIN,
     QUALITY_PROMPT_COVERAGE_ENABLED,
     QUALITY_COVERAGE_THRESHOLD,
     QUALITY_COMPLEXITY_ENABLED,
+    QUALITY_BREAK_THRESHOLD,
+    QUALITY_COHERENCE_LOCAL_WEIGHT,
+    QUALITY_COHERENCE_GLOBAL_WEIGHT,
+    QUALITY_RELEVANCE_DOC_BLEND,
+    QUALITY_RELEVANCE_SENTENCE_BLEND,
+    QUALITY_RELEVANCE_COVERAGE_BLEND,
+    QUALITY_COMPLEXITY_RELEVANCE_GATE,
+    QUALITY_COMPLEXITY_COHERENCE_GATE,
+    QUALITY_COMPLEXITY_TARGET_STEPS,
+    QUALITY_COMPLEXITY_SCALE,
+    QUALITY_COMPLEXITY_DISTANCE_THRESHOLD,
+    QUALITY_COMPLEXITY_STEP_WEIGHT,
+    QUALITY_COMPLEXITY_NOVELTY_WEIGHT,
+    # Entity-Based Voting Caps
+    ENTITY_VOTING_CAPS_ENABLED,
+    ENTITY_MAX_VOTES,
+    ENTITY_MIN_GROUP_SIZE,
+    # Sybil detection thresholds (MPNet-calibrated)
+    SYBIL_MIN_HIGH_THRESHOLD,
+    SYBIL_MIN_VERY_HIGH_THRESHOLD,
+    SYBIL_HIGH_SIMILARITY_PERCENTILE,
+    SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE,
+    SYBIL_MIN_RESPONSE_LENGTH,
+    SYBIL_MIN_INTERNAL_SIMILARITY,
+    SYBIL_FUSION_SEMANTIC_THRESHOLD,
+    SYBIL_FUSION_LEXICAL_THRESHOLD,
+    SYBIL_FUSION_STRUCTURE_THRESHOLD,
+    SYBIL_TRAJECTORY_THRESHOLD,
+    SYBIL_TRAJECTORY_N_CLUSTERS,
+    # Migration
+    FALLBACK_MODEL,
 )
 from validator.network.fiber_client import ValidatorFiberClient
 
@@ -39,6 +74,95 @@ from .sybil_detection import SybilDetector, SybilDetectionResult
 # Fiber client cache for heatmap uploads
 _heatmap_fiber_client_cache: Dict[str, ValidatorFiberClient] = {}
 
+
+# =========================================================================
+# Entity-Based Voting Caps
+# =========================================================================
+
+def cap_entity_contributions(
+    miner_hotkeys: List[str],
+    node_map: Dict[str, Tuple[str, str]],
+    max_entity_votes: float = ENTITY_MAX_VOTES,
+    min_group_size: int = ENTITY_MIN_GROUP_SIZE,
+) -> Dict[str, float]:
+    """Compute per-miner weight multipliers that limit sybil entity influence.
+
+    An *entity* is a group of miners sharing the same IP address (strongest
+    signal) or coldkey (weaker signal, applied second).  IP-based grouping
+    takes priority: miners already capped by an IP group are not
+    double-counted in coldkey groups.
+
+    For each entity group with *N* members (N >= ``min_group_size``), every
+    member receives a weight multiplier of ``min(1.0, max_entity_votes / N)``.
+    Solo miners (unique IP **and** coldkey) retain a weight of 1.0.
+
+    Args:
+        miner_hotkeys: Ordered list of miner hotkeys participating in this
+            challenge round.
+        node_map: Mapping of ``hotkey → (ip_address, coldkey)``.  Typically
+            built from the latest metagraph snapshot.
+        max_entity_votes: Maximum effective votes per entity group regardless
+            of group size.
+        min_group_size: Groups smaller than this are treated as individuals.
+
+    Returns:
+        ``{hotkey: weight}`` where weight ∈ (0.0, 1.0].  Only hotkeys present
+        in *miner_hotkeys* appear in the result.
+    """
+    # Default all weights to 1.0
+    weights: Dict[str, float] = {hk: 1.0 for hk in miner_hotkeys}
+
+    # Filter to miners we actually have node data for
+    participating = [hk for hk in miner_hotkeys if hk in node_map]
+    if not participating:
+        return weights
+
+    # --- Phase 1: IP-based grouping (strongest signal) ---
+    ip_groups: Dict[str, List[str]] = {}
+    for hk in participating:
+        ip, _ = node_map[hk]
+        if ip and ip not in ("0", "0.0.0.0"):
+            ip_groups.setdefault(ip, []).append(hk)
+
+    ip_capped: set = set()  # hotkeys already handled by IP grouping
+    for ip, members in ip_groups.items():
+        n = len(members)
+        if n < min_group_size:
+            continue
+        cap = min(1.0, max_entity_votes / n)
+        for hk in members:
+            weights[hk] = cap
+            ip_capped.add(hk)
+        logger.info(
+            f"[ENTITY-CAP] IP group {ip}: {n} miners → weight={cap:.3f} "
+            f"(max_votes={max_entity_votes})"
+        )
+
+    # --- Phase 2: Coldkey-based grouping (weaker signal, secondary) ---
+    # Only applies to miners NOT already capped by IP grouping.
+    ck_groups: Dict[str, List[str]] = {}
+    for hk in participating:
+        if hk in ip_capped:
+            continue
+        _, coldkey = node_map[hk]
+        if coldkey:
+            ck_groups.setdefault(coldkey, []).append(hk)
+
+    for ck, members in ck_groups.items():
+        n = len(members)
+        if n < min_group_size:
+            continue
+        cap = min(1.0, max_entity_votes / n)
+        for hk in members:
+            weights[hk] = min(weights[hk], cap)  # Don't increase existing cap
+        logger.info(
+            f"[ENTITY-CAP] Coldkey group {ck[:16]}...: {n} miners → weight={cap:.3f} "
+            f"(max_votes={max_entity_votes})"
+        )
+
+    return weights
+
+
 class InferenceValidator:
     """Validator for inference responses."""
     
@@ -49,18 +173,14 @@ class InferenceValidator:
         # Load configuration
         self.config = get_validator_config()
         
-        # Initialize embedding model from internal config (network-consistent, not env-configurable)
-        self.embedding_model = SentenceTransformer(SENTENCE_TRANSFORMER_MODEL)
-        if EMBEDDING_FP16_ENABLED:
-            try:
-                self.embedding_model.half()
-                logger.info(f"Loaded sentence transformer model: {SENTENCE_TRANSFORMER_MODEL} (FP16 enabled)")
-            except Exception as e:
-                logger.warning(f"FP16 conversion failed ({e}), using FP32")
-        else:
-            logger.info(f"Loaded sentence transformer model: {SENTENCE_TRANSFORMER_MODEL}")
+        # Node map for entity-based voting caps: hotkey → (ip, coldkey)
+        # Updated externally via update_node_map() on each metagraph refresh.
+        self._node_map: Dict[str, Tuple[str, str]] = {}
         
-        # Initialize enhanced quality scorer (Tier 4)
+        # Initialize embedding model with fallback
+        self.embedding_model = self._init_embedder_with_fallback()
+        
+        # Initialize enhanced quality scorer (Tier 4+5) with ALL configurable params
         self.quality_scorer = EvaluationQualityScorer(
             sentence_relevance_weight=QUALITY_SENTENCE_RELEVANCE_WEIGHT,
             min_sentence_words=QUALITY_MIN_SENTENCE_WORDS,
@@ -68,8 +188,21 @@ class InferenceValidator:
             coherence_embedding_chain=QUALITY_COHERENCE_EMBEDDING_CHAIN,
             complexity_enabled=QUALITY_COMPLEXITY_ENABLED,
             coverage_enabled=QUALITY_PROMPT_COVERAGE_ENABLED,
+            break_threshold=QUALITY_BREAK_THRESHOLD,
+            coherence_local_weight=QUALITY_COHERENCE_LOCAL_WEIGHT,
+            coherence_global_weight=QUALITY_COHERENCE_GLOBAL_WEIGHT,
+            relevance_doc_blend=QUALITY_RELEVANCE_DOC_BLEND,
+            relevance_sentence_blend=QUALITY_RELEVANCE_SENTENCE_BLEND,
+            relevance_coverage_blend=QUALITY_RELEVANCE_COVERAGE_BLEND,
+            complexity_relevance_gate=QUALITY_COMPLEXITY_RELEVANCE_GATE,
+            complexity_coherence_gate=QUALITY_COMPLEXITY_COHERENCE_GATE,
+            complexity_target_steps=QUALITY_COMPLEXITY_TARGET_STEPS,
+            complexity_scale=QUALITY_COMPLEXITY_SCALE,
+            complexity_distance_threshold=QUALITY_COMPLEXITY_DISTANCE_THRESHOLD,
+            complexity_step_weight=QUALITY_COMPLEXITY_STEP_WEIGHT,
+            complexity_novelty_weight=QUALITY_COMPLEXITY_NOVELTY_WEIGHT,
         )
-        logger.info("Enhanced quality scorer (Tier 4) initialized")
+        logger.info("Enhanced quality scorer (Tier 4+5) initialized")
         
         # Initialize narrative generator with LLM config (only if enabled)
         # IMPORTANT: The API endpoint must implement OpenAI Chat Completions API format
@@ -93,13 +226,109 @@ class InferenceValidator:
         else:
             logger.info("Narrative generation disabled - evaluation and heatmap generation will still run")
         
-        # Initialize sybil detector
+        # Initialize sybil detector with adaptive MPNet-calibrated thresholds
         self.sybil_detector = SybilDetector(
-            high_similarity_threshold=0.95,
-            very_high_similarity_threshold=0.98,
-            min_group_size=2
+            min_high_threshold=SYBIL_MIN_HIGH_THRESHOLD,
+            min_very_high_threshold=SYBIL_MIN_VERY_HIGH_THRESHOLD,
+            high_similarity_percentile=SYBIL_HIGH_SIMILARITY_PERCENTILE,
+            very_high_similarity_percentile=SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE,
+            min_response_length=SYBIL_MIN_RESPONSE_LENGTH,
+            min_group_size=2,
+            min_internal_similarity=SYBIL_MIN_INTERNAL_SIMILARITY,
+            fusion_semantic_threshold=SYBIL_FUSION_SEMANTIC_THRESHOLD,
+            fusion_lexical_threshold=SYBIL_FUSION_LEXICAL_THRESHOLD,
+            fusion_structure_threshold=SYBIL_FUSION_STRUCTURE_THRESHOLD,
+            trajectory_threshold=SYBIL_TRAJECTORY_THRESHOLD,
+            trajectory_n_clusters=SYBIL_TRAJECTORY_N_CLUSTERS,
         )
     
+    # ── Model initialisation helpers ──────────────────────────────────
+
+    @staticmethod
+    def _init_embedder_with_fallback() -> SentenceTransformer:
+        """Load the primary embedding model with GPU check and MiniLM fallback.
+
+        1. Attempts to load ``SENTENCE_TRANSFORMER_MODEL`` (MPNet by default).
+        2. If ``EMBEDDING_FP16_ENABLED`` and a CUDA GPU is available, converts
+           the model to half-precision.
+        3. If the primary model fails to load, falls back to ``FALLBACK_MODEL``
+           (MiniLM).
+        """
+        import torch
+
+        def _load_and_configure(model_name: str) -> SentenceTransformer:
+            model = SentenceTransformer(model_name)
+            # Apply max_seq_length from config
+            model.max_seq_length = EMBEDDING_MAX_SEQ_LENGTH_DOC
+            if EMBEDDING_FP16_ENABLED and torch.cuda.is_available():
+                try:
+                    model.half()
+                    logger.info(
+                        f"Loaded {model_name} (FP16 on CUDA)"
+                    )
+                except Exception as e:
+                    logger.warning(f"FP16 conversion failed ({e}), using FP32")
+                    logger.info(f"Loaded {model_name} (FP32)")
+            else:
+                device_info = "CUDA" if torch.cuda.is_available() else "CPU"
+                logger.info(f"Loaded {model_name} (FP32, {device_info})")
+            return model
+
+        try:
+            return _load_and_configure(SENTENCE_TRANSFORMER_MODEL)
+        except Exception as e:
+            logger.error(
+                f"Primary model {SENTENCE_TRANSFORMER_MODEL} failed to load: {e}. "
+                f"Falling back to {FALLBACK_MODEL}"
+            )
+            return _load_and_configure(FALLBACK_MODEL)
+
+    def update_node_map(self, nodes: List[Any]) -> None:
+        """Rebuild the internal ``hotkey → (ip, coldkey)`` mapping from a
+        fresh metagraph snapshot.
+
+        Call this on every metagraph refresh so that entity-based voting caps
+        use up-to-date network topology.
+
+        Args:
+            nodes: List of ``fiber.chain.models.Node`` (or any object with
+                ``hotkey``, ``ip``, and ``coldkey`` attributes).
+        """
+        new_map: Dict[str, Tuple[str, str]] = {}
+        for node in nodes:
+            hk = getattr(node, "hotkey", None)
+            ip = getattr(node, "ip", "") or ""
+            ck = getattr(node, "coldkey", "") or ""
+            if hk:
+                new_map[hk] = (str(ip), str(ck))
+        self._node_map = new_map
+        logger.debug(f"[ENTITY-CAP] Node map updated: {len(new_map)} entries")
+
+    def _embed_batch(
+        self,
+        texts: List[str],
+        *,
+        batch_size: Optional[int] = None,
+        normalize: bool = True,
+    ) -> np.ndarray:
+        """Embed a list of texts with ``normalize_embeddings=True`` by default.
+
+        Parameters
+        ----------
+        texts : list of str
+        batch_size : int, optional
+            Defaults to ``EMBEDDING_BATCH_SIZE_DOC``.
+        normalize : bool
+            When True, outputs are L2-normalised so dot product == cosine.
+        """
+        bs = batch_size or EMBEDDING_BATCH_SIZE_DOC
+        return self.embedding_model.encode(
+            texts,
+            batch_size=bs,
+            convert_to_numpy=True,
+            normalize_embeddings=normalize,
+        )
+
     async def evaluate_responses(
         self,
         challenge_id: int,
@@ -225,18 +454,58 @@ class InferenceValidator:
                 return 1.0, None, None, emissions
             
             # Extract response texts and calculate embeddings (only for valid responses)
+            # Uses normalize_embeddings=True so dot product == cosine similarity.
             response_texts = [r.response_text for r in valid_responses]
-            embeddings = self.embedding_model.encode(response_texts, convert_to_numpy=True)
+            embeddings = self._embed_batch(response_texts, batch_size=EMBEDDING_BATCH_SIZE_DOC)
             
             # CRITICAL: Generate prompt embedding for semantic quality assessment
-            prompt_embedding = self.embedding_model.encode([prompt], convert_to_numpy=True)[0]
+            prompt_embedding = self._embed_batch([prompt])[0]
             
             logger.debug(f"[EVALUATION] Generated embeddings: shape={embeddings.shape}")
             
+            # Build the embed_fn that quality_scorer / sybil_detector can use to
+            # embed arbitrary texts on demand (sentence-level, prompt components, etc.).
+            # Passes normalize_embeddings=True and sentence batch size.
+            def _embed_fn(texts: List[str]) -> np.ndarray:
+                return self._embed_batch(
+                    texts,
+                    batch_size=EMBEDDING_BATCH_SIZE_SENTENCE,
+                    normalize=True,
+                )
+            
+            # ── Entity-based voting caps ─────────────────────────────────
+            # Compute per-miner weight multipliers to limit sybil entity
+            # influence in consensus scoring.  Disabled miners (or those
+            # without node data) default to weight 1.0.
+            entity_weights_array: Optional[np.ndarray] = None
+            if (
+                ENTITY_VOTING_CAPS_ENABLED
+                and self._node_map
+                and valid_miner_hotkeys
+            ):
+                entity_weight_map = cap_entity_contributions(
+                    miner_hotkeys=valid_miner_hotkeys,
+                    node_map=self._node_map,
+                    max_entity_votes=ENTITY_MAX_VOTES,
+                    min_group_size=ENTITY_MIN_GROUP_SIZE,
+                )
+                entity_weights_array = np.array(
+                    [entity_weight_map.get(hk, 1.0) for hk in valid_miner_hotkeys],
+                    dtype=np.float64,
+                )
+                capped_count = int(np.sum(entity_weights_array < 1.0))
+                if capped_count > 0:
+                    logger.info(
+                        f"[ENTITY-CAP] {capped_count}/{len(valid_miner_hotkeys)} miners "
+                        f"capped by entity voting caps"
+                    )
+                else:
+                    logger.debug("[ENTITY-CAP] No miners capped (all unique entities)")
+            elif not ENTITY_VOTING_CAPS_ENABLED:
+                logger.debug("[ENTITY-CAP] Entity voting caps disabled by config")
+            
             # Create consensus engine with miner IDs, prompt embedding, and
-            # the enhanced quality scorer (Tier 4) for embedding-aware metrics.
-            # The embed_fn lambda wraps SentenceTransformer.encode so the scorer
-            # can embed arbitrary texts (sentences, prompt components) on demand.
+            # the enhanced quality scorer (Tier 4+5) for embedding-aware metrics.
             consensus_engine = ConsensusEngine(
                 original_prompt=prompt,
                 responses=response_texts,
@@ -244,7 +513,8 @@ class InferenceValidator:
                 miner_ids=valid_miner_ids,
                 prompt_embedding=prompt_embedding,  # For semantic quality assessment
                 quality_scorer=self.quality_scorer if EMBEDDING_SENTENCE_LEVEL else None,
-                embed_fn=lambda texts: self.embedding_model.encode(texts, convert_to_numpy=True),
+                embed_fn=_embed_fn,
+                entity_weights=entity_weights_array,
             )
             
             # Configure consensus evaluation
@@ -332,7 +602,9 @@ class InferenceValidator:
                         similarity_matrix=original_similarity_matrix,
                         responses=valid_responses,
                         miner_ids=sybil_miner_ids,
-                        challenge_id=challenge_id
+                        challenge_id=challenge_id,
+                        prompt=prompt,
+                        embed_fn=_embed_fn,
                     )
                 except Exception as e:
                     logger.warning(f"[EVALUATION] Sybil detection failed: {e}. Continuing without sybil detection.")
@@ -351,7 +623,8 @@ class InferenceValidator:
                         "miner_hotkey_2": pair.miner_hotkey_2,
                         "similarity_score": pair.similarity_score,
                         "response_text_1": pair.response_text_1[:500],  # Truncate for storage
-                        "response_text_2": pair.response_text_2[:500]
+                        "response_text_2": pair.response_text_2[:500],
+                        "detection_method": pair.detection_method,
                     }
                     for pair in sybil_result.suspicious_pairs
                 ]
@@ -362,6 +635,7 @@ class InferenceValidator:
                         "avg_similarity": group.avg_similarity,
                         "min_similarity": group.min_similarity,
                         "max_similarity": group.max_similarity,
+                        "min_internal_similarity": group.min_internal_similarity,
                         "response_texts": {
                             str(mid): text[:500]  # Truncate for storage
                             for mid, text in group.response_texts.items()
@@ -678,7 +952,6 @@ class InferenceValidator:
             if cache_key not in _heatmap_fiber_client_cache:
                 _heatmap_fiber_client_cache[cache_key] = ValidatorFiberClient(
                     validator_hotkey_ss58=validator_hotkey,
-                    private_key=None,  # TODO: Load from Bittensor wallet
                     key_ttl_seconds=3600,
                     handshake_timeout_seconds=30
                 )

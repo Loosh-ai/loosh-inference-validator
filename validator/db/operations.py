@@ -252,8 +252,21 @@ class DatabaseManager:
             
             # Build UID->hotkey mapping from Miner table for backward compatibility
             # (old emissions are keyed by UID strings, new ones by hotkey)
+            # UID COMPRESSION SAFETY: When two miners share the same node_id
+            # (old miner deregistered, new miner took the same UID), prefer the
+            # most recently updated miner to avoid attributing old emissions to
+            # the wrong hotkey.
             miners = session.query(Miner).all()
-            uid_to_hotkey = {str(m.node_id): m.hotkey for m in miners if m.node_id is not None}
+            uid_to_hotkey: Dict[str, str] = {}
+            uid_to_last_updated: Dict[str, datetime] = {}
+            for m in miners:
+                if m.node_id is None:
+                    continue
+                uid_str = str(m.node_id)
+                m_updated = m.last_updated or datetime.min
+                if uid_str not in uid_to_hotkey or m_updated > uid_to_last_updated.get(uid_str, datetime.min):
+                    uid_to_hotkey[uid_str] = m.hotkey
+                    uid_to_last_updated[uid_str] = m_updated
             
             # Track EMA scores per miner (keyed by HOTKEY)
             ema_scores: Dict[str, float] = {}
