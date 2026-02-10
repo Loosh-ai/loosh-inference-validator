@@ -2,12 +2,32 @@
 
 Complete guide for setting up and running a validator on the Loosh Inference Subnet with deployment options for local, PM2, Docker, and RunPod configurations.
 
-> **🔒 VALIDATOR REGISTRATION**  
-> **IMPORTANT:** We're currently onboarding validators and need to coordinate setup to ensure network stability. Please contact us to get started:
-> - **Discord**: [Join our Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474)
-> - **Email**: hello@loosh.ai
+> **✅ AUTOMATIC VALIDATOR DISCOVERY**  
+> Validators are now **automatically discovered** by the Challenge API. Once you register on subnet 78 and post your IP and port to the chain via `fiber-post-ip`, the Challenge API will detect your validator and begin sending challenges — no manual onboarding required.
 > 
-> We'll help you get configured and connected to the Challenge API. This is a temporary onboarding process as we scale up the network.
+> **Need help?** Join our [Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474) or email hello@loosh.ai.
+
+> **🔥 FIREWALL CONFIGURATION — REQUIRED**  
+> **Your validator receives challenges via inbound HTTPS connections from the Challenge API.** You **must** whitelist inbound traffic from the following domains on the port you post to the chain (default `8000`):
+>
+> | Domain | Environment |
+> |--------|-------------|
+> | `challenge.loosh.ai` | **Mainnet** |
+> | `challenge-test.loosh.ai` | **Testnet** |
+>
+> If your firewall blocks these connections, your validator will **never receive challenges** and will not earn emissions.
+>
+> ```bash
+> # Example: UFW
+> sudo ufw allow from $(dig +short challenge.loosh.ai) to any port 8000 proto tcp
+> sudo ufw allow from $(dig +short challenge-test.loosh.ai) to any port 8000 proto tcp
+>
+> # Example: iptables
+> iptables -A INPUT -p tcp -s $(dig +short challenge.loosh.ai) --dport 8000 -j ACCEPT
+> iptables -A INPUT -p tcp -s $(dig +short challenge-test.loosh.ai) --dport 8000 -j ACCEPT
+> ```
+>
+> **Note:** The IP addresses behind these domains may change. If you use IP-based rules, re-resolve periodically or whitelist the port for all sources and rely on application-level authentication (Fiber MLTS).
 
 ## Table of Contents
 
@@ -180,7 +200,7 @@ btcli wallet overview \
 - Registration is a one-time fee (check current cost with `btcli subnet list`)
 - After registration, you'll receive a UID on the subnet
 - Wait a few minutes after registration for the network to sync
-- **Contact us for validator onboarding** - we'll help you connect to the Challenge API (hello@loosh.ai)
+- **Autodiscovery**: After posting your IP via `fiber-post-ip`, the Challenge API will automatically detect your validator and begin sending challenges
 
 #### Step 4: Post Your IP Address
 
@@ -323,7 +343,7 @@ You should receive challenges within 1-10 minutes. Check your logs:
 # "Evaluation complete, submitting response batch"
 ```
 
-Once your validator is working correctly on testnet, contact us to coordinate your mainnet deployment.
+Once your validator is working correctly on testnet, you can deploy to mainnet. Validators are automatically discovered — just register, post your IP, and configure for mainnet.
 
 ## Deployment Options
 
@@ -904,17 +924,27 @@ btcli wallet overview \
      --external_ip <YOUR-PUBLIC-IP>
    ```
 
-2. **Need validator onboarding:**
-   - Contact hello@loosh.ai or via Discord for help getting connected to the Challenge API
-   - Include your hotkey address and any setup questions
+2. **Validator not discovered by Challenge API:**
+   - Ensure you have posted your IP and port to subnet 78 via `fiber-post-ip`
+   - Wait a few minutes for the Challenge API to pick up the new metagraph state
+   - Verify your registration with `btcli wallet overview --netuid 78`
+   - If issues persist, join our [Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474) or email hello@loosh.ai
 
-3. **Firewall blocking port 8000:**
+3. **Firewall blocking inbound connections from the Challenge API:**
    ```bash
-   # Check if port is accessible
+   # Check if port is accessible from the outside
    curl http://<YOUR-PUBLIC-IP>:8000/availability
    
-   # Open firewall (example for ufw)
+   # You MUST whitelist challenge.loosh.ai and challenge-test.loosh.ai
+   # on the port you posted to the chain (default 8000).
+   # See the firewall notice at the top of this document for full examples.
+   
+   # Quick fix: open the port to all sources (simplest)
    sudo ufw allow 8000/tcp
+   
+   # Or whitelist only the Challenge API domains
+   sudo ufw allow from $(dig +short challenge.loosh.ai) to any port 8000 proto tcp
+   sudo ufw allow from $(dig +short challenge-test.loosh.ai) to any port 8000 proto tcp
    ```
 
 4. **Challenge API URL misconfigured:**
@@ -1095,8 +1125,8 @@ Once your validator is running successfully:
 
 4. **Deploy to Mainnet (When Ready):**
    - Test thoroughly on testnet first
-   - Contact hello@loosh.ai to coordinate mainnet deployment
-   - We'll help ensure your setup is configured correctly
-   - Provide your hotkey address and any questions about your setup
+   - Register on mainnet, post your IP, and configure your `.env` for mainnet
+   - Validators are automatically discovered — no manual coordination needed
+   - If you have questions, join our [Discord](https://discordapp.com/channels/799672011265015819/1351180661918142474) or email hello@loosh.ai
 
 Happy validating! 🎯

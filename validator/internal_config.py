@@ -361,6 +361,13 @@ class InternalConfig:
     # A sybil_score of 1.0 results in an 80% weight reduction (score * 0.2).
     SYBIL_PENALTY_MAX: float = 0.8
     
+    # Minimum fraction of EMA a penalized miner always retains (grace floor).
+    # Regardless of SYBIL_PENALTY_MAX, the penalized score will never drop
+    # below ``ema_score * SYBIL_PENALTY_MIN_RETENTION``.
+    # Set to 0.0 to allow full effect of SYBIL_PENALTY_MAX with no floor.
+    # Example: 0.15 means the worst offender still keeps 15% of their EMA.
+    SYBIL_PENALTY_MIN_RETENTION: float = 0.15
+    
     # Sybil score threshold below which no penalty is applied.
     # Miners with sybil_score < this value are treated as clean.
     SYBIL_PENALTY_THRESHOLD: float = 0.1
@@ -464,6 +471,7 @@ ENTITY_MIN_GROUP_SIZE = INTERNAL_CONFIG.ENTITY_MIN_GROUP_SIZE
 # Sybil Penalty
 SYBIL_PENALTY_ENABLED = INTERNAL_CONFIG.SYBIL_PENALTY_ENABLED
 SYBIL_PENALTY_MAX = INTERNAL_CONFIG.SYBIL_PENALTY_MAX
+SYBIL_PENALTY_MIN_RETENTION = INTERNAL_CONFIG.SYBIL_PENALTY_MIN_RETENTION
 SYBIL_PENALTY_THRESHOLD = INTERNAL_CONFIG.SYBIL_PENALTY_THRESHOLD
 SYBIL_SAFETY_MAX_PENALIZED_FRACTION = INTERNAL_CONFIG.SYBIL_SAFETY_MAX_PENALIZED_FRACTION
 SYBIL_SCORE_CACHE_TTL_SECONDS = INTERNAL_CONFIG.SYBIL_SCORE_CACHE_TTL_SECONDS

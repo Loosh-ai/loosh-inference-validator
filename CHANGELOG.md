@@ -5,148 +5,246 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-02-10
 
-### Changed
+### Added
+
+#### Automatic Validator Discovery
+
+Validators are now **automatically discovered** by the Challenge API. Once a validator registers on subnet 78 and posts its IP and port to the chain via `fiber-post-ip`, the Challenge API detects the validator from the metagraph and begins sending challenges. Manual onboarding coordination is no longer required.
 
 #### Centralized Internal Configuration (`validator/internal_config.py`)
 
 **Rationale:** Ensure all validators use identical operational parameters for network consistency. Prevents accidental misconfiguration of critical values.
 
-**New file:** `validator/internal_config.py` containing `InternalConfig` dataclass with all hard-coded parameters:
+**New file:** `validator/internal_config.py` containing `InternalConfig` frozen dataclass with all hard-coded parameters:
 
-| Category | Parameters |
-|----------|------------|
+| Category | Key Parameters |
+|----------|---------------|
 | **Miner Selection** | `MIN_MINERS=3`, `MAX_MINERS=10`, `MIN_STAKE_THRESHOLD=100`, `MAX_MINER_STAKE=999` |
 | **Challenge Timing** | `CHALLENGE_INTERVAL_SECONDS=300`, `CHALLENGE_TIMEOUT_SECONDS=120`, `EVALUATION_TIMEOUT_SECONDS=300` |
 | **Scoring** | `SCORE_THRESHOLD=0.7` |
 | **Weight Setting** | `WEIGHTS_INTERVAL_SECONDS=4320`, `WEIGHT_MIN_SERVING_NODES=1`, `WEIGHT_FRESHNESS_HOURS=3/24` |
 | **Deregistration** | `DEREGISTRATION_BLOCK_LIMIT=5000`, `DEGRADED_MODE_THRESHOLD=4000`, `EMERGENCY_MODE_THRESHOLD=4500` |
+| **LLM Behavior** | `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_REQUEST_TIMEOUT_SECONDS` |
+| **Embedding Model & Performance** | `SENTENCE_TRANSFORMER_MODEL=all-mpnet-base-v2`, `FALLBACK_MODEL=all-MiniLM-L6-v2`, `EMBEDDING_FP16_ENABLED`, `EMBEDDING_MAX_SEQ_LENGTH_DOC/SENTENCE`, `EMBEDDING_BATCH_SIZE_DOC/SENTENCE` |
+| **Evaluation Quality** | Sentence-level relevance, coherence chain, prompt coverage, reasoning complexity weights |
+| **Concurrency** | `MAX_CONCURRENT_CHALLENGES`, `MAX_CONCURRENT_AVAILABILITY_CHECKS`, `CHALLENGE_SEMAPHORE_TIMEOUT_SECONDS` |
+| **Fiber MLTS** | `FIBER_KEY_TTL_SECONDS`, `FIBER_HANDSHAKE_TIMEOUT_SECONDS`, `FIBER_ENABLE_KEY_ROTATION` |
+| **Sybil Detection** | Adaptive thresholds, multi-view fusion, trajectory analysis, group detection params |
+| **Sybil Penalty** | `SYBIL_PENALTY_ENABLED`, `SYBIL_PENALTY_MAX`, `SYBIL_PENALTY_MIN_RETENTION`, `SYBIL_PENALTY_THRESHOLD`, `SYBIL_SAFETY_MAX_PENALIZED_FRACTION` |
 
 **Removed from `.env`:** All parameters listed above are no longer configurable via environment variables.
 
 **Migration:** No action required. Values match previous defaults. To modify, edit `validator/internal_config.py` directly.
 
-### Added
+#### Tiered Fallback Strategy for Weight Setting (`validator/evaluation/set_weights.py`)
 
-#### Tiered Fallback Strategy for Weight Setting (`validator/evaluation/set_weights.py`, `docs/WEIGHT_SETTING_FALLBACK_STRATEGY.md`)
+**Problem:** Validators faced a critical dilemma — Challenge API failures → freshness gate zeros weights → weight setting skipped → validator deregistered at ~5000 blocks.
 
-**Problem:** Validators faced a critical dilemma:
-1. Challenge API failures → validators can't submit results → freshness gate zeros weights → weight setting skipped
-2. Skipping weight setting indefinitely → validator deregistered at ~5000 blocks
-3. BUT: Distributing weights uniformly would reward untested/adversarial miners unfairly
+**Solution:** Three-tier operation mode based on blocks since last weight update:
 
-**Solution:** Implemented three-tier operation mode based on blocks since last weight update:
+| Mode | Blocks | Freshness Gate | Behavior |
+|------|--------|---------------|----------|
+| **NORMAL** | < 4000 | 3 hours | Standard quality, skip if all zero |
+| **DEGRADED** | 4000–4499 | 24 hours | Relaxed gate, uses local DB emissions |
+| **EMERGENCY** | ≥ 4500 | None | Uses all available emissions; uniform weights as absolute last resort |
 
-**NORMAL MODE** (< 4000 blocks):
-- Standard 3-hour freshness gate
-- Skip weight setting if all weights zero (safe because plenty of time before deregistration)
-- Production-grade quality standards
-
-**DEGRADED MODE** (4000-4499 blocks):
-- Relaxed 24-hour freshness gate (instead of 3 hours)
-- Uses emissions from **local validator DB** (stored during evaluation, regardless of Challenge API success)
-- Still skips if all weights zero after relaxed gate
-- Logs warnings to alert operators
-
-**EMERGENCY MODE** (≥ 4500 blocks):
-- No freshness gate - uses ALL available emissions from local DB
-- If still no emissions → distributes minimal uniform weights as absolute last resort
-- Critical alerts for operator intervention
-
-**Key Insight:** Validators **already store emissions locally** after evaluation (before submitting to Challenge API). The freshness gate determines whether to **use** the emissions, not whether they exist.
-
-**Why This Doesn't Skew Weights:**
-- Local emissions are real (same consensus algorithm as Challenge API submission)
-- Degraded/Emergency modes use actual performance data from local evaluations
-- Uniform distribution only happens in extreme edge case (no local DB emissions + imminent deregistration)
-- Mode transitions are gradual (normal → degraded → emergency)
-
-**Constants** (hard-coded for network consistency):
-```python
-WEIGHT_FRESHNESS_HOURS = 3                    # Normal mode
-WEIGHT_FRESHNESS_HOURS_DEGRADED = 24          # Degraded mode
-DEREGISTRATION_BLOCK_LIMIT = 5000             # Bittensor threshold
-DEGRADED_MODE_THRESHOLD = 4000                # 80% of limit
-EMERGENCY_MODE_THRESHOLD = 4500               # 90% of limit
-```
-
-**Monitoring:**
-- `⚠️ DEGRADED MODE` logs → Check Challenge API connectivity
-- `⚠️ EMERGENCY MODE` logs → URGENT intervention needed
-- Track `blocks_since_last_update` in observability dashboards
+Local emissions (stored during evaluation, regardless of Challenge API success) are used in degraded/emergency modes.
 
 See [WEIGHT_SETTING_FALLBACK_STRATEGY.md](docs/WEIGHT_SETTING_FALLBACK_STRATEGY.md) for complete documentation.
 
-#### Garbage Consensus Prevention (`validator/evaluation/Evaluation/consensus_engine.py`, `validator/evaluation/evaluation.py`)
+#### Bittensor SDK Weight Setting (CRv4) (`validator/evaluation/set_weights.py`)
 
-Added multi-layer defense against coordinated low-quality response attacks:
+**Problem:** Fiber uses the deprecated `bittensor-commit-reveal` package (CRv3), which has been removed from the chain.
+
+**Solution:** Weight setting now uses the Bittensor SDK v10+ (`subtensor.set_weights()`), which handles CRv4 automatically via `commit_timelocked_weights_extrinsic`. Fiber is still used for other chain operations where it works fine.
+
+**New dependency:** `bittensor>=10.0.0` (added to `pyproject.toml`).
+
+#### Enhanced Quality Scorer (`validator/evaluation/Evaluation/quality_scorer.py`)
+
+**New file.** Provides embedding-aware, multi-granularity quality assessment replacing simple heuristic metrics:
+
+1. **Multi-granularity relevance** — sentence-level + full-response cosine similarity to the prompt, with keyword coverage fallback
+2. **Embedding-chain coherence** — local (adjacent), global (centroid-based), break counting, topic drift, and graph connectivity
+3. **Prompt coverage completeness** — fraction of prompt semantic components addressed by the response
+4. **Reasoning complexity** — semantic step clustering, shaped reward, non-redundancy, path length, curvature (gated by quality)
+5. **Answer shape checks** — structural constraint detection (lists, code blocks, etc.)
+6. **Keyword coverage** — TF-IDF-based keyword extraction fallback
+
+Uses batch sentence embedding via the shared `SentenceTransformer` model for efficiency.
+
+#### Garbage Consensus Prevention (`validator/evaluation/Evaluation/consensus_engine.py`)
+
+Multi-layer defense against coordinated low-quality response attacks:
 
 - **Semantic quality assessment**: Filters responses by prompt relevance, information density, specificity, and coherence (threshold: 0.35)
-- **Smart outlier detection**: Quality-aware logic that protects high-quality unique responses from removal
+- **Smart outlier detection**: Quality-aware logic that protects high-quality unique responses from removal by garbage clusters
 - **Quality-weighted consensus**: High-quality responses have more influence on consensus determination
 - **Diversity bonus**: Rewards unique high-quality responses (up to +15%)
 - **Garbage detection alerts**: Automatic logging when low-quality clusters detected
 
-Pipeline now runs quality assessment FIRST before clustering (prevents garbage from forming consensus). Individual scoring rebalanced: similarity (40%), quality (25%), confidence (15%), consensus (10%), diversity (15%).
+Pipeline now runs quality assessment **before** clustering (prevents garbage from forming consensus). Individual scoring rebalanced: similarity (40%), quality (25%), confidence (15%), consensus (10%), diversity (15%).
+
+#### Advanced Sybil Detection (`validator/evaluation/sybil_detection.py`)
+
+Major enhancements over the original implementation:
+
+
+#### Sybil Penalty in Weight Setting (`validator/evaluation/set_weights.py`)
+
+Graduated sybil penalty applied during weight setting:
+
+#### Sybil Sync Background Task (`validator/evaluation/sybil_sync.py`)
+
+Periodically syncs local sybil detection records to the Challenge API in batches:
+
+#### Miner Network Reporter (`validator/evaluation/miner_network_reporter.py`)
+
+**New file.** Background task that periodically reports miner network observations (IP, port, coldkey) to the Challenge API:
+
+#### F3 Batch Response Submission (`validator/challenge_api/update_challenge_response.py`)
+
+**New method:** `submit_response_batch()` replaces the deprecated single-response `update_challenge_response()`:
+
+- Submits **all** miner responses and evaluation data in a single batch
+- Prioritizes Fiber MLTS encryption with automatic HTTP fallback
+- Includes consensus scores, emissions, sybil detection results, and narrative
+
+**New models** (`validator/challenge_api/models.py`): `ResponseBatchSubmit`, `MinerResponseData`, `EvaluationResult`, `TokenUsage`.
+
+#### Fiber MLTS Keypair Integration (`validator/network/fiber_client.py`)
+
+- Module-level `set_validator_keypair()` / `get_validator_keypair()` so the sr25519 keypair is stored once at startup and shared by all `ValidatorFiberClient` instances
+- `main.py` calls `set_validator_keypair(hotkey)` immediately after loading the wallet
+- Handshake messages signed with `keypair.sign()` (sr25519) instead of placeholder signatures
+- Removed `_load_private_key_from_hotkey()` placeholder and `private_key=None` constructor parameter
+
+#### Sybil Detection Database Schema (`validator/db/schema.py`, `validator/db/operations.py`)
+
+- **New table:** `SybilDetectionResult` with columns for suspicious pairs/groups (JSON), analysis report, thresholds, and challenge FK
+- **New operations:** `log_sybil_detection_result()`, `delete_sybil_detection_result()`
+- `Miner.hotkey` is now the primary persistent identifier; `node_id` (UID) is informational only
+- `get_miner_ema_scores()` handles both old UID-keyed and new hotkey-keyed emissions for backward compatibility
+- **UID compression safety**: `uid_to_hotkey` mapping now prefers the most recently updated miner when two share the same `node_id`
+
+#### Embedding Model Upgrade to `sentence-transformers/all-mpnet-base-v2`
+
+**Previous model:** `sentence-transformers/all-MiniLM-L6-v2` (384-dim embeddings)
+**New model:** `sentence-transformers/all-mpnet-base-v2` (768-dim embeddings)
+
+This is a significant quality improvement for consensus evaluation and sybil detection. MPNet produces substantially richer semantic representations — enabling more accurate similarity scoring, better outlier detection, and more reliable sybil pair identification. The tradeoff is ~3× slower encoding, but on GPU this remains well under 100ms per batch.
+
+- Model name is now driven by `SENTENCE_TRANSFORMER_MODEL` in `internal_config.py` (no longer configurable via `.env`)
+- `all-MiniLM-L6-v2` is retained as an automatic fallback if MPNet fails to load (e.g. disk space, download failure)
+- FP16 optimization enabled by default for GPU acceleration (`EMBEDDING_FP16_ENABLED = True`)
+- Configurable max sequence lengths for document (`EMBEDDING_MAX_SEQ_LENGTH_DOC`) and sentence (`EMBEDDING_MAX_SEQ_LENGTH_SENTENCE`) embeddings
+- Configurable batch sizes for document and sentence embedding passes
+
+#### IPv6 Address Support (`validator/miner_api/ipv6_fix.py`)
+
+**New file.** `construct_server_address_with_ipv6()` utility:
+
+- Detects IPv6 addresses (contains `:`) and wraps in square brackets: `http://[ipv6]:port`
+- Maintains backward compatibility with IPv4
+- Handles local development cases (`0.0.0.1`, `localhost`)
+
+#### Heatmap & Quality Plot Optimization (`validator/evaluation/Evaluation/consensus_engine.py`)
+
+- PIL/Pillow post-processing for lossless PNG compression (smaller file sizes)
+- Adjusted figure size and font sizes for efficient images
+- Quality plots gated behind `enable_semantic_quality` (no longer requires deprecated `apply_quality_filter`)
+
+#### Firewall Whitelist Documentation (`README.md`, `docs/VALIDATOR_QUICKSTART.md`)
+
+Added prominent **🔥 FIREWALL CONFIGURATION — REQUIRED** notice to both documents:
+
+- Validators must whitelist inbound connections from `challenge.loosh.ai` (mainnet) and `challenge-test.loosh.ai` (testnet) on the port posted to the chain
+- Includes UFW and iptables examples
+
+### Changed
+
+#### Configuration Split (`.env` → `internal_config.py`)
+
+All operational parameters (scoring, timing, weights, evaluation, sybil, embedding) moved from `.env`-based `ValidatorConfig` to hard-coded `InternalConfig`. Only deployment-specific values remain in `.env`:
+
+- API URLs, API keys, wallet paths, ports, device settings
+- See `env.example` for the updated list
+
+#### Consensus Engine Pipeline Reorder
+
+Evaluation pipeline in `ConsensusEngine.evaluate_consensus()` reordered for garbage prevention:
+
+1. Semantic quality assessment (new — first)
+2. Semantic quality filter (new)
+3. Smart outlier detection (new — replaces `_apply_outlier_filter`)
+4. Clustering
+5. Quality-weighted scoring (new)
+6. Individual scoring (rebalanced weights)
+
+#### `_apply_mask()` Now Maintains Quality State
+
+`ConsensusEngine._apply_mask()` now also filters `quality_scores` and `quality_breakdowns` arrays alongside embeddings, confidences, responses, and labels. Previously these could become stale/misaligned after masking.
+
+#### Weight Setting Uses Bittensor SDK
+
+Replaced Fiber-based weight setting with Bittensor SDK `subtensor.set_weights()` for CRv4 compatibility. Substrate connections are now properly closed in `finally` blocks.
+
+#### `challenge_timeout` Uses `INTERNAL_CONFIG`
+
+`main.py` now reads `INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS` instead of `getattr(config, 'challenge_timeout_seconds', 120)`.
 
 ### Fixed
 
+#### Fiber sr25519 Signing (was placeholder)
+
+**Problem:** `ValidatorFiberClient._perform_handshake()` noty always correctly authenticating.
+
+**Fix:** Keypair loaded once at startup via `set_validator_keypair()`, all handshake messages now signed with `keypair.sign()` (sr25519).
+
 #### Pipeline Timing Import Fix (`validator/challenge/send_challenge.py`)
 
-**Problem:** Runtime error when trying to merge miner timing data:
-```
-name 'PipelineTiming' is not defined
-```
+**Problem:** `name 'PipelineTiming' is not defined` runtime error.
 
-**Solution:** Added missing imports:
-```python
-from validator.timing import PipelineTiming, PipelineStages
-```
+**Fix:** Added missing imports: `from validator.timing import PipelineTiming, PipelineStages`
 
-**Impact:**
-- ✅ Miner timing data can now be properly merged into pipeline timing
-- ✅ Timing metadata from miner responses is correctly captured
-- ✅ No more runtime errors when miners return timing information
+#### Fiber Key Expiration Race Condition (`validator/network/fiber_client.py`)
 
-#### Fiber Encryption Key Expiration Race Condition (`validator/network/fiber_client.py`)
+**Problem:** 401 errors on heatmap uploads due to race condition between client and server key expiration.
 
-**Problem:**  401 errors when uploading heatmaps to Challenge API:
-```
-Failed to decrypt payload. Key may be expired or invalid.
-```
-
-**Root Cause:** Race condition between client and server key expiration checks:
-
-**Solution:** 
-- Added 60-second **safety margin** for client-side key refresh (`key_refresh_margin_seconds = 60`)
-- Client now refreshes keys at 3540s (TTL - margin) instead of 3600s
-- Added automatic retry with re-handshake on 401 errors in `send_encrypted_upload`
-- Improved logging to show key age and effective TTL when refreshing
-
-**Impact:**
-- ✅ Prevents keys from expiring during transmission
-- ✅ Reduces fallback to plain HTTP uploads
-- ✅ Automatic recovery from occasional race conditions
-- ✅ Better debugging with detailed key age logging
+**Fix:** Added 60-second safety margin for client-side key refresh. Added automatic retry with re-handshake on 401 errors. Improved key age logging.
 
 #### Test Mode Response Detection (`validator/evaluation/evaluation.py`)
 
-**Problem:** Miners could return test mode responses and still receive emissions/rewards:
-**Solution:**
-Test Mode Responses are filtered out.
+**Problem:** Miners could return test mode responses and still receive emissions.
 
-#### IPv6 Address Support
+**Fix:** Test mode responses are filtered out before evaluation.
 
-**Problem:** Validators couldn't connect to miners with IPv6 addresses
+#### `blocks_since_update` Safety in DEGRADED Mode (`validator/evaluation/set_weights.py`)
 
-**Solution:** Created `construct_server_address_with_ipv6()` utility function that:
-- Detects IPv6 addresses (contains `:`) and wraps them in square brackets: `http://[ipv6]:port`
-- Maintains backward compatibility with IPv4 addresses: `http://ipv4:port`
-- Handles local development cases (`0.0.0.1`, `localhost`)
+**Problem:** `blocks_since_update` could be `None` when metagraph fetch fails, causing `TypeError` in DEGRADED mode arithmetic.
 
-**Impact:**
-- ✅ Validators can now connect to IPv6 miners for availability checks
+**Fix:** Added `None` guard with graceful fallback messaging.
+
+#### Atomic Sybil Cache File Write (`validator/evaluation/set_weights.py`)
+
+**Problem:** `_save_file_cache()` wrote directly to the cache file — a crash mid-write could corrupt it.
+
+**Fix:** Writes to a temporary file first, then uses `os.replace()` for atomic rename.
+
+#### UID-to-Hotkey Collision in EMA Scores (`validator/db/operations.py`)
+
+**Problem:** When two miners share the same `node_id` (UID compression), the `uid_to_hotkey` mapping could attribute old emissions to the wrong hotkey.
+
+**Fix:** Mapping now tracks `last_updated` timestamp and prefers the most recently updated miner for each UID.
+
+#### scikit-learn `AgglomerativeClustering` Compatibility (`validator/evaluation/Evaluation/consensus_engine.py`)
+
+**Problem:** `TypeError` with `affinity` parameter in scikit-learn >= 1.2.
+
+**Fix:** Try/except to use `metric='precomputed'` (>= 1.2) with fallback to `affinity='precomputed'`.
+
 ---
 
 ## [1.0.1] - 2026-02-05
@@ -270,6 +368,6 @@ Initial production release of loosh-inference-validator.
 
 ---
 
-[Unreleased]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.0.1...HEAD
+[1.2.0]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.0.1...v1.2.0
 [1.0.1]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Loosh-ai/loosh-inference-validator/releases/tag/v1.0.0

@@ -42,6 +42,7 @@ from validator.internal_config import (
     EMERGENCY_MODE_THRESHOLD,
     SYBIL_PENALTY_ENABLED,
     SYBIL_PENALTY_MAX,
+    SYBIL_PENALTY_MIN_RETENTION,
     SYBIL_PENALTY_THRESHOLD,
     SYBIL_SAFETY_MAX_PENALIZED_FRACTION,
     SYBIL_SCORE_CACHE_TTL_SECONDS,
@@ -331,6 +332,7 @@ def _apply_sybil_penalty(
     Penalty formula (per miner):
         penalty = min(sybil_score, SYBIL_PENALTY_MAX)   (clamped to max)
         penalized_ema = ema_score * (1 - penalty)
+        penalized_ema = max(penalized_ema, ema_score * SYBIL_PENALTY_MIN_RETENTION)  (grace floor)
 
     Safety valve with **fallback-K restoration**:
         If more than ``SYBIL_SAFETY_MAX_PENALIZED_FRACTION`` of serving miners
@@ -390,12 +392,16 @@ def _apply_sybil_penalty(
         if hotkey in penalize_set:
             sybil_score = sybil_scores.get(hotkey, 0.0)
             penalty = min(sybil_score, SYBIL_PENALTY_MAX)
-            new_score = ema_score * (1.0 - penalty)
+            penalized = ema_score * (1.0 - penalty)
+            # Grace floor: never drop below MIN_RETENTION fraction of original EMA
+            floor = ema_score * SYBIL_PENALTY_MIN_RETENTION
+            new_score = max(penalized, floor)
 
             logger.info(
                 f"[sybil] Penalizing miner {hotkey[:16]}...: "
                 f"sybil_score={sybil_score:.3f}, penalty={penalty:.3f}, "
                 f"ema={ema_score:.6f} → {new_score:.6f}"
+                f"{' (floor applied)' if new_score > penalized else ''}"
             )
             updated[hotkey] = new_score
             penalized_count += 1
