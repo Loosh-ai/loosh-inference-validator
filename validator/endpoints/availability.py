@@ -1,3 +1,4 @@
+import importlib.metadata
 from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -5,6 +6,14 @@ from pydantic import BaseModel
 
 from validator.config import ValidatorConfig
 from validator.endpoints.challenges import get_queue_size
+
+# Read version once at module load from pyproject.toml metadata
+try:
+    _VALIDATOR_VERSION = importlib.metadata.version("loosh-inference-validator")
+except importlib.metadata.PackageNotFoundError:
+    _VALIDATOR_VERSION = "unknown"
+
+_SERVICE_NAME = "loosh-inference-validator"
 
 router = APIRouter()
 
@@ -25,7 +34,14 @@ class AvailabilityResponse(BaseModel):
     available: bool = True
 
 class HealthResponse(BaseModel):
-    """Response for health check."""
+    """Response for health check.
+
+    ``service_name`` and ``version`` allow the Challenge API to confirm
+    that the endpoint is running Loosh validator code at the expected
+    version before routing challenges to it.
+    """
+    service_name: str = _SERVICE_NAME
+    version: str = _VALIDATOR_VERSION
     status: str = "healthy"
     queue_size: int = 0
     processing_stats: Dict[str, Any] = {}

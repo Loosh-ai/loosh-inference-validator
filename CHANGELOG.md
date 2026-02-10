@@ -156,6 +156,15 @@ This is a significant quality improvement for consensus evaluation and sybil det
 - Adjusted figure size and font sizes for efficient images
 - Quality plots gated behind `enable_semantic_quality` (no longer requires deprecated `apply_quality_filter`)
 
+#### Validator Identity in Health Response (`validator/endpoints/availability.py`)
+
+The `/health` and `/healthz` endpoints now return `service_name` and `version` in the `HealthResponse`:
+
+- `service_name: "loosh-inference-validator"` — hard-coded identifier confirming this is Loosh validator software
+- `version` — read from `importlib.metadata` (i.e. `pyproject.toml` version) at module load
+
+The Challenge API uses these fields to verify that discovered validators are running the correct software at the required version before routing challenges. Validators that fail either check are marked `"outdated"` — excluded from challenge routing but continuously re-checked so they auto-recover on upgrade.
+
 #### Firewall Whitelist Documentation (`README.md`, `docs/VALIDATOR_QUICKSTART.md`)
 
 Added prominent **🔥 FIREWALL CONFIGURATION — REQUIRED** notice to both documents:
