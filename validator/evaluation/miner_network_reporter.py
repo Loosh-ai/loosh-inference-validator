@@ -10,6 +10,7 @@ Runs asynchronously without blocking main processing.
 """
 
 import asyncio
+import json
 from typing import Callable, List, Optional
 
 import httpx
@@ -18,6 +19,7 @@ from loguru import logger
 
 from validator.config import get_validator_config
 from validator.internal_config import INTERNAL_CONFIG
+from validator.network.challenge_api_auth import merge_auth_headers
 
 
 class MinerNetworkReporter:
@@ -166,13 +168,16 @@ class MinerNetworkReporter:
         }
 
         try:
+            body_bytes = json.dumps(payload).encode()
+            headers = merge_auth_headers(
+                {"Content-Type": "application/json"},
+                body=body_bytes,
+                api_key=self._config.challenge_api_key,
+            )
             resp = await self._http_client.post(
                 url,
-                json=payload,
-                headers={
-                    "X-API-Key": self._config.challenge_api_key,
-                    "Content-Type": "application/json",
-                },
+                content=body_bytes,
+                headers=headers,
             )
             if resp.status_code == 201:
                 data = resp.json()

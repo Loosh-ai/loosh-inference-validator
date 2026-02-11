@@ -227,23 +227,30 @@ async def main_loop():
     pending_challenges_queue: asyncio.Queue = asyncio.Queue()
 
     # Validate Challenge API configuration
-    if not config.challenge_api_url or not config.challenge_api_key:
+    if not config.challenge_api_url:
         error_msg = (
             f"\n{'='*70}\n"
             f"CONFIGURATION ERROR: Challenge API not configured\n"
             f"{'='*70}\n"
-            f"The validator requires Challenge API configuration to operate.\n"
+            f"The validator requires CHALLENGE_API_URL to operate.\n"
             f"\nCurrent values:\n"
             f"  - CHALLENGE_API_URL: {config.challenge_api_url or 'NOT SET'}\n"
-            f"  - CHALLENGE_API_KEY: {'SET' if config.challenge_api_key else 'NOT SET'}\n"
-            f"\nPlease set these environment variables:\n"
+            f"  - CHALLENGE_API_KEY: {'SET' if config.challenge_api_key else 'NOT SET (OK — hotkey signature auth will be used)'}\n"
+            f"\nPlease set at minimum:\n"
             f"  - CHALLENGE_API_URL (e.g., http://challenge-api:8080)\n"
-            f"  - CHALLENGE_API_KEY (your API key)\n"
+            f"\nCHALLENGE_API_KEY is optional — when a hotkey is loaded, requests\n"
+            f"are signed with its sr25519 key and no API key is needed.\n"
             f"\nSee environments/env.validator.example for configuration options.\n"
             f"{'='*70}\n"
         )
         logger.error(error_msg)
         return
+    
+    if not config.challenge_api_key:
+        logger.info(
+            "CHALLENGE_API_KEY not set — will authenticate to Challenge API "
+            "using hotkey signature (sr25519). This is the preferred method."
+        )
 
     # Initialize availability worker (non-blocking background process)
     availability_worker = AvailabilityWorker(
@@ -514,27 +521,40 @@ async def main_loop():
                         # Filter out validators (including self)
                         validator_hotkey = hotkey.ss58_address
                         filtered_nodes = []
-                        filtered_count = 0
+                        self_excluded_count = 0
+                        validator_db_excluded_count = 0
+                        validator_db_excluded_hotkeys = []
                         
                         if current_available_nodes:
+                            logger.debug(
+                                f"Available nodes from worker: {len(current_available_nodes)} — "
+                                f"hotkeys: {[n.hotkey[:8] + '...' for n in current_available_nodes]}"
+                            )
                             for node in current_available_nodes:
                                 # Skip validator's own node
                                 if node.hotkey == validator_hotkey:
-                                    filtered_count += 1
+                                    self_excluded_count += 1
                                     continue
                                 
                                 # Skip if node is a known validator
                                 if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
-                                    filtered_count += 1
+                                    validator_db_excluded_count += 1
+                                    validator_db_excluded_hotkeys.append(node.hotkey[:8] + '...')
                                     continue
                                 
                                 filtered_nodes.append(node)
+                        else:
+                            logger.debug("No available nodes returned from availability worker cache")
+                        
+                        total_excluded = self_excluded_count + validator_db_excluded_count
                         
                         # If no filtered nodes available, queue challenge and wait
                         if not filtered_nodes:
                             logger.info(
                                 f"No available nodes for challenge {challenge_id[:8]}... "
-                                f"(excluding {filtered_count} validator(s)). "
+                                f"(worker returned {len(current_available_nodes) if current_available_nodes else 0} nodes, "
+                                f"excluded {self_excluded_count} self + "
+                                f"{validator_db_excluded_count} validator-db {validator_db_excluded_hotkeys}). "
                                 f"Queuing for FIFO processing when nodes become available..."
                             )
                             # Queue challenge and wait for nodes to become available
@@ -551,13 +571,14 @@ async def main_loop():
                                 if current_available_nodes:
                                     # Re-filter nodes
                                     filtered_nodes = []
-                                    filtered_count = 0
+                                    self_excluded_count = 0
+                                    validator_db_excluded_count = 0
                                     for node in current_available_nodes:
                                         if node.hotkey == validator_hotkey:
-                                            filtered_count += 1
+                                            self_excluded_count += 1
                                             continue
                                         if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
-                                            filtered_count += 1
+                                            validator_db_excluded_count += 1
                                             continue
                                         filtered_nodes.append(node)
                                     
@@ -577,11 +598,13 @@ async def main_loop():
                                 # Don't return - continue to try processing (may fail gracefully)
                                 # This ensures challenges are never permanently skipped
                         
-                        if filtered_count > 0:
+                        # Recalculate in case the retry loop updated the counts
+                        total_excluded = self_excluded_count + validator_db_excluded_count
+                        if total_excluded > 0:
                             logger.debug(
-                                f"Filtered out {filtered_count} validator node(s) "
-                                f"(including self: {validator_hotkey[:8]}...) "
-                                f"from {len(current_available_nodes)} available nodes"
+                                f"Filtered out {total_excluded} node(s) "
+                                f"({self_excluded_count} self + {validator_db_excluded_count} validator-db) "
+                                f"from {len(current_available_nodes) if current_available_nodes else 0} available nodes"
                             )
                         
                         # Create new challenge tasks for available nodes

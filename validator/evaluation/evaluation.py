@@ -13,6 +13,7 @@ from sentence_transformers import SentenceTransformer
 from validator.challenge.challenge_types import InferenceResponse
 from validator.db.operations import DatabaseManager
 from validator.config import get_validator_config
+from validator.network.challenge_api_auth import get_auth_headers
 from validator.internal_config import (
     SENTENCE_TRANSFORMER_MODEL,
     ENABLE_NARRATIVE_GENERATION,
@@ -1012,9 +1013,12 @@ class InferenceValidator:
                 data.add_field("challenge_id", str(challenge_id))
                 data.add_field("file_type", file_type)
                 
-                headers = {
-                    "X-API-Key": self.config.challenge_api_key
-                }
+                # Prefer hotkey signature; fall back to API key.
+                # Multipart form-data can't be pre-hashed so we sign
+                # without body (nonce + hotkey) — still proves identity.
+                headers = get_auth_headers(body=None)
+                if not headers:
+                    headers = {"X-API-Key": self.config.challenge_api_key}
                 
                 async with session.post(upload_url, data=data, headers=headers) as response:
                     if response.status == 201:

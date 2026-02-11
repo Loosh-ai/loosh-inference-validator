@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import json
 import random
 import hashlib
 import httpx
 import asyncio
 from datetime import datetime
 from typing import Optional, Dict, Any
+
+from validator.network.challenge_api_auth import merge_auth_headers
 
 subjects = ["astronomy", "cooking", "sports", "robotics", "history"]
 styles = ["explain like I'm 5", "write a poem", "summarize", "debate", "argue against"]
@@ -72,17 +75,19 @@ async def post_challenge(options: Dict[str, Any], api_key: str, url: str = "http
             }
         }
         
-        # Prepare headers
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
+        # Prepare headers (prefer hotkey signature, fall back to API key)
+        body_bytes = json.dumps(challenge_data).encode()
+        headers = merge_auth_headers(
+            {"Content-Type": "application/json"},
+            body=body_bytes,
+            api_key=api_key,
+        )
         
         # Send POST request
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
-                json=challenge_data,
+                content=body_bytes,
                 headers=headers,
                 timeout=30.0
             )

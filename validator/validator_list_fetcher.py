@@ -12,6 +12,7 @@ import httpx
 from loguru import logger
 
 from validator.config import get_validator_config
+from validator.network.challenge_api_auth import merge_auth_headers
 
 
 class ValidatorListFetcher:
@@ -107,23 +108,44 @@ class ValidatorListFetcher:
         async with self._refresh_lock:
             try:
                 url = f"{self.challenge_api_url}/validators"
-                headers = {
-                    "Authorization": f"Bearer {self.challenge_api_key}",
+                base_headers = {
                     "Content-Type": "application/json"
                 }
+                # Prefer hotkey signature; fall back to API key
+                headers = merge_auth_headers(
+                    base_headers, body=None, api_key=self.challenge_api_key
+                )
                 
                 response = await self._http_client.get(url, headers=headers)
                 
                 if response.status_code == 200:
                     validators = response.json()
-                    new_hotkeys = {v.get('hotkey_ss58') for v in validators if v.get('hotkey_ss58')}
                     
+                    # Only treat nodes as actual validators if they either:
+                    # 1. Have validator_permit=true on chain, OR
+                    # 2. Were admin-approved (metadata.admin_approved=true)
+                    # The Challenge API DB may contain miners (auto-registered
+                    # from chain) that have neither — those must NOT be
+                    # filtered out when selecting miners for challenges.
+                    new_hotkeys = set()
+                    for v in validators:
+                        hk = v.get('hotkey_ss58')
+                        if not hk:
+                            continue
+                        has_permit = v.get('validator_permit', False)
+                        meta = v.get('metadata') or {}
+                        admin_approved = meta.get('admin_approved', False)
+                        if has_permit or admin_approved:
+                            new_hotkeys.add(hk)
+                    
+                    total_in_db = len(validators)
                     old_count = len(self._validator_hotkeys)
                     self._validator_hotkeys = new_hotkeys
                     self._last_refresh = datetime.utcnow()
                     
                     logger.info(
                         f"Refreshed validator list: {len(self._validator_hotkeys)} validators "
+                        f"(permit or admin-approved) of {total_in_db} total in DB "
                         f"(was {old_count}, last refresh: {self._last_refresh.isoformat()})"
                     )
                 elif response.status_code == 503:

@@ -31,6 +31,7 @@ from loguru import logger
 
 from validator.db.operations import DatabaseManager
 from validator.config import get_validator_config
+from validator.network.challenge_api_auth import merge_auth_headers
 from validator.internal_config import (
     WEIGHTS_INTERVAL_SECONDS,
     MAX_MINER_STAKE,
@@ -260,14 +261,17 @@ async def _fetch_sybil_scores(
     url = f"{challenge_api_url.rstrip('/')}/analytics/sybil-scores/batch"
 
     try:
+        body_bytes = json.dumps({"miner_hotkeys": miner_hotkeys}).encode()
+        headers = merge_auth_headers(
+            {"Content-Type": "application/json"},
+            body=body_bytes,
+            api_key=challenge_api_key,
+        )
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 url,
-                json={"miner_hotkeys": miner_hotkeys},
-                headers={
-                    "X-API-Key": challenge_api_key,
-                    "Content-Type": "application/json",
-                },
+                content=body_bytes,
+                headers=headers,
             )
             response.raise_for_status()
             data = response.json()
@@ -431,14 +435,17 @@ async def _submit_penalty_report(
     }
 
     try:
+        body_bytes = json.dumps(payload).encode()
+        headers = merge_auth_headers(
+            {"Content-Type": "application/json"},
+            body=body_bytes,
+            api_key=challenge_api_key,
+        )
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 url,
-                json=payload,
-                headers={
-                    "X-API-Key": challenge_api_key,
-                    "Content-Type": "application/json",
-                },
+                content=body_bytes,
+                headers=headers,
             )
         if resp.status_code == 201:
             logger.debug(

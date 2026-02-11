@@ -386,111 +386,181 @@ class ValidatorFiberClient:
         self,
         challenge_api_endpoint: str,
         batch_data: Dict,
-        client: httpx.AsyncClient
+        client: httpx.AsyncClient,
+        max_retries: int = 3,
+        retry_base_delay: float = 2.0
     ) -> bool:
         """
-        Send encrypted response batch to Challenge API.
+        Send encrypted response batch to Challenge API with retry logic.
+        
+        Retries on transient errors (404 challenge-not-found, 500 deadlock/server errors)
+        with exponential backoff. Non-retryable errors (400, 409) fail immediately.
         
         Args:
             challenge_api_endpoint: Base URL of Challenge API
             batch_data: Response batch data dictionary (will be JSON-encoded and encrypted)
             client: HTTP client for making requests
+            max_retries: Maximum number of retry attempts for transient errors
+            retry_base_delay: Base delay in seconds between retries (doubles each attempt)
         
         Returns:
             True if batch sent successfully, False otherwise
         """
-        try:
-            # Ensure handshake exists
-            handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
-            if not handshake_result:
-                logger.error(f"Failed to establish handshake with Challenge API {challenge_api_endpoint}")
-                return False
-            
-            fernet, key_uuid = handshake_result
-            
-            # Encode batch data as JSON
-            batch_json = json.dumps(batch_data).encode('utf-8')
-            
-            # Encrypt with Fernet
-            encrypted_payload = fernet.encrypt(batch_json)
-            
-            # Send encrypted batch
-            url = f"{challenge_api_endpoint.rstrip('/')}/fiber/response/batch"
-            headers = {
-                "symmetric-key-uuid": key_uuid,
-                "hotkey-ss58-address": self.validator_hotkey_ss58,
-                "Content-Type": "application/octet-stream"
-            }
-            
-            response = await client.post(
-                url,
-                content=encrypted_payload,
-                headers=headers,
-                timeout=30.0
-            )
-            
-            if response.status_code in (200, 201):
-                logger.info(
-                    f"Encrypted response batch sent successfully to Challenge API "
-                    f"(challenge_id: {batch_data.get('challenge_id', 'unknown')[:8]}...)"
-                )
-                return True
-            elif response.status_code == 409:
-                logger.warning(
-                    f"Responses already exist for challenge {batch_data.get('challenge_id', 'unknown')} - "
-                    f"batch submission rejected (409 Conflict)"
-                )
-                return False
-            elif response.status_code == 401:
-                # Key invalid/expired on Challenge API side - clear cache and retry once
-                logger.warning(
-                    f"Challenge API rejected key (401) - clearing cache and retrying handshake"
-                )
-                if challenge_api_endpoint in self._key_cache:
-                    del self._key_cache[challenge_api_endpoint]
-                
-                # Retry with fresh handshake
+        import asyncio
+        
+        challenge_id = batch_data.get('challenge_id', 'unknown')
+        challenge_id_short = challenge_id[:8] if isinstance(challenge_id, str) else str(challenge_id)
+        
+        # Status codes that are transient and worth retrying
+        RETRYABLE_STATUS_CODES = {404, 500, 502, 503, 504}
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Ensure handshake exists
                 handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
                 if not handshake_result:
-                    logger.error(f"Failed to re-establish handshake with Challenge API after 401")
+                    logger.error(
+                        f"Failed to establish handshake with Challenge API {challenge_api_endpoint} "
+                        f"(challenge_id: {challenge_id_short}...)"
+                    )
                     return False
                 
                 fernet, key_uuid = handshake_result
-                encrypted_payload = fernet.encrypt(batch_json)
-                headers["symmetric-key-uuid"] = key_uuid
                 
-                retry_response = await client.post(
+                # Encode batch data as JSON
+                batch_json = json.dumps(batch_data).encode('utf-8')
+                
+                # Encrypt with Fernet
+                encrypted_payload = fernet.encrypt(batch_json)
+                
+                # Send encrypted batch
+                url = f"{challenge_api_endpoint.rstrip('/')}/fiber/response/batch"
+                headers = {
+                    "symmetric-key-uuid": key_uuid,
+                    "hotkey-ss58-address": self.validator_hotkey_ss58,
+                    "Content-Type": "application/octet-stream"
+                }
+                
+                response = await client.post(
                     url,
                     content=encrypted_payload,
                     headers=headers,
                     timeout=30.0
                 )
                 
-                if retry_response.status_code in (200, 201):
-                    logger.info(
-                        f"Encrypted response batch sent successfully after re-handshake "
-                        f"(challenge_id: {batch_data.get('challenge_id', 'unknown')[:8]}...)"
-                    )
+                if response.status_code in (200, 201):
+                    if attempt > 0:
+                        logger.info(
+                            f"Encrypted response batch sent successfully after {attempt} "
+                            f"retries (challenge_id: {challenge_id_short}...)"
+                        )
+                    else:
+                        logger.info(
+                            f"Encrypted response batch sent successfully to Challenge API "
+                            f"(challenge_id: {challenge_id_short}...)"
+                        )
                     return True
-                else:
-                    logger.error(
-                        f"Failed to send encrypted response batch after re-handshake: "
-                        f"{retry_response.status_code} - {retry_response.text}"
+                elif response.status_code == 409:
+                    # Conflict — responses already exist. Not retryable.
+                    logger.warning(
+                        f"Responses already exist for challenge {challenge_id} - "
+                        f"batch submission rejected (409 Conflict)"
                     )
                     return False
-            else:
+                elif response.status_code == 401:
+                    # Key invalid/expired on Challenge API side - clear cache and retry once
+                    logger.warning(
+                        f"Challenge API rejected key (401) for challenge {challenge_id_short}... "
+                        f"- clearing cache and retrying handshake"
+                    )
+                    if challenge_api_endpoint in self._key_cache:
+                        del self._key_cache[challenge_api_endpoint]
+                    
+                    # Retry with fresh handshake
+                    handshake_result = await self._ensure_handshake(challenge_api_endpoint, client)
+                    if not handshake_result:
+                        logger.error(f"Failed to re-establish handshake with Challenge API after 401")
+                        return False
+                    
+                    fernet, key_uuid = handshake_result
+                    encrypted_payload = fernet.encrypt(batch_json)
+                    headers["symmetric-key-uuid"] = key_uuid
+                    
+                    retry_response = await client.post(
+                        url,
+                        content=encrypted_payload,
+                        headers=headers,
+                        timeout=30.0
+                    )
+                    
+                    if retry_response.status_code in (200, 201):
+                        logger.info(
+                            f"Encrypted response batch sent successfully after re-handshake "
+                            f"(challenge_id: {challenge_id_short}...)"
+                        )
+                        return True
+                    else:
+                        logger.error(
+                            f"Failed to send encrypted response batch after re-handshake: "
+                            f"{retry_response.status_code} - {retry_response.text}"
+                        )
+                        return False
+                elif response.status_code in RETRYABLE_STATUS_CODES:
+                    # Transient error — retry with backoff
+                    if attempt < max_retries:
+                        delay = retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Transient error submitting response batch for challenge "
+                            f"{challenge_id_short}... (HTTP {response.status_code}: "
+                            f"{response.text[:200]}). "
+                            f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.error(
+                            f"Failed to send encrypted response batch to Challenge API after "
+                            f"{max_retries} retries (challenge_id: {challenge_id_short}...): "
+                            f"{response.status_code} - {response.text}"
+                        )
+                        return False
+                else:
+                    # Non-retryable client error (400, etc.)
+                    logger.error(
+                        f"Failed to send encrypted response batch to Challenge API "
+                        f"(challenge_id: {challenge_id_short}...): "
+                        f"{response.status_code} - {response.text}"
+                    )
+                    return False
+                    
+            except httpx.TimeoutException:
+                if attempt < max_retries:
+                    delay = retry_base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Timeout sending response batch for challenge {challenge_id_short}... "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(
+                        f"Timeout sending response batch for challenge {challenge_id_short}... "
+                        f"after {max_retries} retries"
+                    )
+                    return False
+            except Exception as e:
                 logger.error(
-                    f"Failed to send encrypted response batch to Challenge API: "
-                    f"{response.status_code} - {response.text}"
+                    f"Error sending encrypted response batch (challenge_id: {challenge_id_short}...): "
+                    f"{e}",
+                    exc_info=True
                 )
+                # If handshake failed, clear cache to force re-handshake next time
+                if challenge_api_endpoint in self._key_cache:
+                    del self._key_cache[challenge_api_endpoint]
                 return False
-                
-        except Exception as e:
-            logger.error(f"Error sending encrypted response batch: {e}", exc_info=True)
-            # If handshake failed, clear cache to force re-handshake next time
-            if challenge_api_endpoint in self._key_cache:
-                del self._key_cache[challenge_api_endpoint]
-            return False
+        
+        # Should not reach here, but just in case
+        return False
     
     async def send_encrypted_upload(
         self,

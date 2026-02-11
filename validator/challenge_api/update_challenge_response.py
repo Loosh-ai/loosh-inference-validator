@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
+import json
 import time
 
 from loguru import logger
@@ -15,6 +16,7 @@ from validator.challenge_api.models import (
 )
 from validator.network.fiber_client import ValidatorFiberClient
 from validator.evaluation.evaluation import InferenceValidator
+from validator.network.challenge_api_auth import merge_auth_headers
 
 # Global Fiber client cache (per validator hotkey and Challenge API endpoint)
 _fiber_client_cache: Dict[str, ValidatorFiberClient] = {}
@@ -178,18 +180,19 @@ async def submit_response_batch(
         
         # Fallback to plain HTTP (for backward compatibility or if Fiber fails)
         url = f"{server_address.rstrip('/')}/response/batch"
-        headers = {
-            "X-API-Key": api_key,
+        body_bytes = json.dumps(batch_data).encode()
+        base_headers = {
             "x-validator-hotkey": batch.validator_hotkey,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
+        headers = merge_auth_headers(base_headers, body=body_bytes, api_key=api_key)
         
         logger.info(
             f"[BATCH] Submitting {len(batch.responses)} responses for challenge {batch.challenge_id} "
             f"to {url} (plain HTTP)"
         )
         
-        response = await client.post(url, json=batch_data, headers=headers, timeout=30.0)
+        response = await client.post(url, content=body_bytes, headers=headers, timeout=30.0)
         
         if response.status_code == 201:
             elapsed_ms = int((time.time() - start_time) * 1000)

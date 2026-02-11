@@ -5,9 +5,26 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-02-10
+## [1.2.0] - 2026-02-11
 
 ### Added
+
+#### Hotkey Signature Authentication for Challenge API Calls
+
+All outbound requests to the Challenge API are now signed with the validator's sr25519 hotkey (`X-Hotkey`, `X-Nonce`, `X-Signature` headers). This eliminates the need for a shared `CHALLENGE_API_KEY`. The signing message is `{nonce}:{hotkey}:{sha256(body)}` for requests with a body, or `{nonce}:{hotkey}` for body-less GET requests. Fully backwards-compatible — when the keypair is not yet loaded (startup race) or the Challenge API is an older version, falls back to the legacy `X-API-Key` header. Both headers are sent simultaneously during the transition period (`validator/network/challenge_api_auth.py`).
+
+`CHALLENGE_API_KEY` is now **optional**. The startup validation no longer hard-fails when it is not set. An informational log is emitted instead, indicating that hotkey signature auth will be used. Validators upgrading to this version do not need to change their `.env` — existing API keys continue to work (`main.py`, `env.example`).
+
+**`merge_auth_headers` utility** — Single call-site-friendly helper that picks the best available auth method (hotkey signature > API key) and enriches the existing headers dict. Sends both hotkey headers and `X-API-Key` simultaneously for maximum backwards compatibility with older Challenge API versions (`validator/network/challenge_api_auth.py`).
+
+**Call sites updated** — All Challenge API call sites now use hotkey signature auth with API-key fallback:
+- `validator_list_fetcher.py` — `GET /validators`
+- `evaluation/sybil_sync.py` — `POST /analytics/sybil-detection/bulk`
+- `evaluation/miner_network_reporter.py` — `POST /analytics/miner-network/bulk`
+- `evaluation/set_weights.py` — `POST /analytics/sybil-scores/batch`, `POST /analytics/penalty-report`
+- `evaluation/evaluation.py` — `POST /heatmap/upload` (multipart; signed without body hash)
+- `challenge_api/update_challenge_response.py` — `POST /response/batch` (plain HTTP fallback)
+- `scripts/generate_challenges.py` — `POST /challenge`
 
 #### Automatic Validator Discovery
 
@@ -205,6 +222,18 @@ Replaced Fiber-based weight setting with Bittensor SDK `subtensor.set_weights()`
 `main.py` now reads `INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS` instead of `getattr(config, 'challenge_timeout_seconds', 120)`.
 
 ### Fixed
+
+#### `NameError: name 'filtered_count' is not defined` (`main.py`)
+
+A variable was renamed from `filtered_count` to `total_excluded` during a refactor but one usage site in the challenge processing loop was missed, causing a crash on every challenge. Fixed by updating the stale reference and its log message. Additionally, `total_excluded` is now recalculated after the "no available nodes" retry loop so the debug log reflects the correct counts.
+
+#### Granular Node-Filtering Logs (`main.py`)
+
+The "No available nodes" and filtered-node debug messages now separately report self-excluded count, validator-db-excluded count, and the hotkeys of validator-db-excluded nodes. Previously these were conflated into a single "excluding N validator(s)" message, making it difficult to diagnose why a miner was being filtered out.
+
+#### `ValidatorListFetcher` Respects `validator_permit` and `admin_approved` (`validator_list_fetcher.py`)
+
+The fetcher now only adds a node to the internal `_validator_hotkeys` set if `validator_permit` is `true` **or** `metadata.admin_approved` is `true`. Previously it treated every entry in the Challenge API's validators table as a validator, which included miners that had been incorrectly auto-registered. Updated log message shows "permit or admin-approved" count vs total DB count.
 
 #### Fiber sr25519 Signing (was placeholder)
 
