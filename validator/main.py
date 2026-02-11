@@ -25,6 +25,7 @@ from validator.endpoints.challenges import ChallengeCreate
 
 from validator.db.operations import DatabaseManager
 from validator.evaluation.sybil_sync import SybilSyncTask
+from validator.evaluation.miner_network_reporter import MinerNetworkReporter
 from validator.validator_list_fetcher import ValidatorListFetcher
 from validator.evaluation.evaluation import InferenceValidator
 
@@ -33,11 +34,13 @@ from fiber.validator.client import construct_server_address
 from fiber.chain.chain_utils import load_hotkey_keypair, load_coldkeypub_keypair
 from fiber.chain.fetch_nodes import get_nodes_for_netuid
 from fiber.chain.interface import get_substrate
+from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
 
 from pathlib import Path
 from datetime import timedelta
 
 from validator.config import get_validator_config
+from validator.internal_config import INTERNAL_CONFIG
 
 
 def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) -> ChallengeAPIResponse:
@@ -92,8 +95,8 @@ async def main_loop():
     logger.info(f"Subnet: {config.netuid}")
     logger.info(f"Wallet: {config.wallet_name}")
     logger.info(f"Hotkey: {config.hotkey_name}")
-    logger.info(f"Challenge Interval: {config.challenge_interval}")
-    logger.info(f"Challenge Timeout: {config.challenge_timeout}")
+    logger.info(f"Challenge Interval: {INTERNAL_CONFIG.challenge_interval} (internal)")
+    logger.info(f"Challenge Timeout: {INTERNAL_CONFIG.challenge_timeout} (internal)")
     logger.info(f"Challenge API URL: {config.challenge_api_url}")
     logger.info(f"Challenge API Key: {'*' * (len(config.challenge_api_key) - 4) + config.challenge_api_key[-4:] if len(config.challenge_api_key) > 4 else '***'}")
     test_mode = getattr(config, 'test_mode', False)
@@ -166,6 +169,10 @@ async def main_loop():
         return
 
     logger.info(f"Loaded hotkey: {hotkey.ss58_address}")
+    
+    # Make the keypair available to Fiber clients for sr25519 signing
+    from validator.network.fiber_client import set_validator_keypair
+    set_validator_keypair(hotkey)
 
     # Initialize database
     try:
@@ -212,7 +219,7 @@ async def main_loop():
         nodes = []
 
     # Concurrency control
-    max_concurrent = config.max_concurrent_challenges
+    max_concurrent = INTERNAL_CONFIG.MAX_CONCURRENT_CHALLENGES
     challenge_semaphore = asyncio.Semaphore(max_concurrent)
     logger.info(f"Concurrency limit: {max_concurrent} concurrent challenges")
     
@@ -220,31 +227,38 @@ async def main_loop():
     pending_challenges_queue: asyncio.Queue = asyncio.Queue()
 
     # Validate Challenge API configuration
-    if not config.challenge_api_url or not config.challenge_api_key:
+    if not config.challenge_api_url:
         error_msg = (
             f"\n{'='*70}\n"
             f"CONFIGURATION ERROR: Challenge API not configured\n"
             f"{'='*70}\n"
-            f"The validator requires Challenge API configuration to operate.\n"
+            f"The validator requires CHALLENGE_API_URL to operate.\n"
             f"\nCurrent values:\n"
             f"  - CHALLENGE_API_URL: {config.challenge_api_url or 'NOT SET'}\n"
-            f"  - CHALLENGE_API_KEY: {'SET' if config.challenge_api_key else 'NOT SET'}\n"
-            f"\nPlease set these environment variables:\n"
+            f"  - CHALLENGE_API_KEY: {'SET' if config.challenge_api_key else 'NOT SET (OK — hotkey signature auth will be used)'}\n"
+            f"\nPlease set at minimum:\n"
             f"  - CHALLENGE_API_URL (e.g., http://challenge-api:8080)\n"
-            f"  - CHALLENGE_API_KEY (your API key)\n"
+            f"\nCHALLENGE_API_KEY is optional — when a hotkey is loaded, requests\n"
+            f"are signed with its sr25519 key and no API key is needed.\n"
             f"\nSee environments/env.validator.example for configuration options.\n"
             f"{'='*70}\n"
         )
         logger.error(error_msg)
         return
+    
+    if not config.challenge_api_key:
+        logger.info(
+            "CHALLENGE_API_KEY not set — will authenticate to Challenge API "
+            "using hotkey signature (sr25519). This is the preferred method."
+        )
 
     # Initialize availability worker (non-blocking background process)
     availability_worker = AvailabilityWorker(
         hotkey=hotkey.ss58_address,
-        max_concurrent=config.max_concurrent_availability_checks,
+        max_concurrent=INTERNAL_CONFIG.MAX_CONCURRENT_AVAILABILITY_CHECKS,
         db_path=config.db_path,
         check_interval=30.0,  # Check every 30 seconds
-        max_miners=config.max_miners
+        max_miners=INTERNAL_CONFIG.MAX_MINERS
     )
     availability_worker.start()
     
@@ -262,6 +276,8 @@ async def main_loop():
     if not test_mode:
         try:
             inference_validator = InferenceValidator(db_manager=db_manager)
+            # Seed entity voting cap node map with initial metagraph snapshot
+            inference_validator.update_node_map(nodes)
             logger.info("InferenceValidator initialized - evaluation and heatmap generation enabled")
         except Exception as e:
             logger.error(f"Failed to initialize InferenceValidator: {e}. Evaluation will be disabled.", exc_info=True)
@@ -298,9 +314,27 @@ async def main_loop():
         logger.warning(f"Failed to start sybil sync task: {e}. Continuing without sybil sync.")
         sybil_sync_task = None
     
+    # Full metagraph node list — updated on every refresh so the network
+    # reporter can observe ALL registered miners (not just available ones).
+    _all_metagraph_nodes: List[Node] = list(nodes)  # seeded with initial fetch
+
+    # Initialize miner network reporter (sends metagraph observations for sybil scoring)
+    miner_network_reporter = None
+    try:
+        miner_network_reporter = MinerNetworkReporter(
+            validator_hotkey_ss58=hotkey.ss58_address,
+            get_nodes=lambda: list(_all_metagraph_nodes),
+            report_interval_seconds=float(INTERNAL_CONFIG.METAGRAPH_REFRESH_INTERVAL_SECONDS),
+        )
+        await miner_network_reporter.start()
+        logger.info("Miner network reporter started (will periodically send metagraph observations to Challenge API)")
+    except Exception as e:
+        logger.warning(f"Failed to start miner network reporter: {e}. Continuing without network observation reporting.")
+        miner_network_reporter = None
+
     # Background task to periodically refresh metagraph (pick up new node registrations)
     metagraph_refresh_task = None
-    metagraph_refresh_interval = float(config.metagraph_refresh_interval_seconds)
+    metagraph_refresh_interval = float(INTERNAL_CONFIG.METAGRAPH_REFRESH_INTERVAL_SECONDS)
     
     async def refresh_metagraph_loop():
         """Periodically refresh the metagraph to pick up new node registrations."""
@@ -318,6 +352,14 @@ async def main_loop():
                     
                     # Update availability worker with new node list
                     availability_worker.update_nodes(refreshed_nodes)
+                    # Update the full metagraph snapshot for network reporter
+                    nonlocal _all_metagraph_nodes
+                    _all_metagraph_nodes = list(refreshed_nodes)
+                    
+                    # Update entity voting cap node map on InferenceValidator
+                    if inference_validator is not None:
+                        inference_validator.update_node_map(refreshed_nodes)
+                    
                     logger.info(f"Metagraph refreshed: {len(refreshed_nodes)} nodes (availability worker updated)")
                     
                 except Exception as e:
@@ -410,9 +452,9 @@ async def main_loop():
     
     try:
         # Create httpx client for challenge sending
-        pool_size = max(100, config.max_concurrent_availability_checks * 2)
+        pool_size = max(100, INTERNAL_CONFIG.MAX_CONCURRENT_AVAILABILITY_CHECKS * 2)
         async with httpx.AsyncClient(
-            timeout=config.challenge_timeout.total_seconds(),
+            timeout=INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS,
             limits=httpx.Limits(
                 max_connections=pool_size, 
                 max_keepalive_connections=pool_size // 2
@@ -449,7 +491,7 @@ async def main_loop():
                             # Add validator receive stage
                             pipeline_timing.add_stage(PipelineStages.VALIDATOR_RECEIVE)
                         
-                        default_model = config.default_model
+                        default_model = INTERNAL_CONFIG.DEFAULT_MODEL
                         challenge_id = challenge_data.id
                         prompt = challenge_data.prompt
                         
@@ -479,27 +521,40 @@ async def main_loop():
                         # Filter out validators (including self)
                         validator_hotkey = hotkey.ss58_address
                         filtered_nodes = []
-                        filtered_count = 0
+                        self_excluded_count = 0
+                        validator_db_excluded_count = 0
+                        validator_db_excluded_hotkeys = []
                         
                         if current_available_nodes:
+                            logger.debug(
+                                f"Available nodes from worker: {len(current_available_nodes)} — "
+                                f"hotkeys: {[n.hotkey[:8] + '...' for n in current_available_nodes]}"
+                            )
                             for node in current_available_nodes:
                                 # Skip validator's own node
                                 if node.hotkey == validator_hotkey:
-                                    filtered_count += 1
+                                    self_excluded_count += 1
                                     continue
                                 
                                 # Skip if node is a known validator
                                 if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
-                                    filtered_count += 1
+                                    validator_db_excluded_count += 1
+                                    validator_db_excluded_hotkeys.append(node.hotkey[:8] + '...')
                                     continue
                                 
                                 filtered_nodes.append(node)
+                        else:
+                            logger.debug("No available nodes returned from availability worker cache")
+                        
+                        total_excluded = self_excluded_count + validator_db_excluded_count
                         
                         # If no filtered nodes available, queue challenge and wait
                         if not filtered_nodes:
                             logger.info(
                                 f"No available nodes for challenge {challenge_id[:8]}... "
-                                f"(excluding {filtered_count} validator(s)). "
+                                f"(worker returned {len(current_available_nodes) if current_available_nodes else 0} nodes, "
+                                f"excluded {self_excluded_count} self + "
+                                f"{validator_db_excluded_count} validator-db {validator_db_excluded_hotkeys}). "
                                 f"Queuing for FIFO processing when nodes become available..."
                             )
                             # Queue challenge and wait for nodes to become available
@@ -516,13 +571,14 @@ async def main_loop():
                                 if current_available_nodes:
                                     # Re-filter nodes
                                     filtered_nodes = []
-                                    filtered_count = 0
+                                    self_excluded_count = 0
+                                    validator_db_excluded_count = 0
                                     for node in current_available_nodes:
                                         if node.hotkey == validator_hotkey:
-                                            filtered_count += 1
+                                            self_excluded_count += 1
                                             continue
                                         if validator_list_fetcher and validator_list_fetcher.is_validator(node.hotkey):
-                                            filtered_count += 1
+                                            validator_db_excluded_count += 1
                                             continue
                                         filtered_nodes.append(node)
                                     
@@ -542,11 +598,13 @@ async def main_loop():
                                 # Don't return - continue to try processing (may fail gracefully)
                                 # This ensures challenges are never permanently skipped
                         
-                        if filtered_count > 0:
+                        # Recalculate in case the retry loop updated the counts
+                        total_excluded = self_excluded_count + validator_db_excluded_count
+                        if total_excluded > 0:
                             logger.debug(
-                                f"Filtered out {filtered_count} validator node(s) "
-                                f"(including self: {validator_hotkey[:8]}...) "
-                                f"from {len(current_available_nodes)} available nodes"
+                                f"Filtered out {total_excluded} node(s) "
+                                f"({self_excluded_count} self + {validator_db_excluded_count} validator-db) "
+                                f"from {len(current_available_nodes) if current_available_nodes else 0} available nodes"
                             )
                         
                         # Create new challenge tasks for available nodes
@@ -597,7 +655,7 @@ async def main_loop():
                                 
                                 challenge_task = await send_challenge(
                                     client=client,
-                                    server_address=construct_server_address(node_with_ip, replace_with_localhost=True),
+                                    server_address=construct_server_address_with_ipv6(node_with_ip, replace_with_localhost=True),
                                     challenge_id=challenge_id,
                                     challenge_orig=challenge_orig,
                                     challenge=challenge,
@@ -619,8 +677,8 @@ async def main_loop():
                                 logger.error(f"Error sending challenge to node {node.node_id}: {str(e)}")
                         
                         # Process challenge results (submits response when ready - completion order)
-                        # Use configured challenge timeout or default to 120s
-                        challenge_timeout = getattr(config, 'challenge_timeout_seconds', 120)
+                        # Use the centralized internal config for challenge timeout
+                        challenge_timeout = INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS
                         await process_challenge_results(
                             new_challenge_tasks,
                             client,
@@ -766,6 +824,13 @@ async def main_loop():
                 await sybil_sync_task.stop()
             except Exception as e:
                 logger.warning(f"Error stopping sybil sync task: {e}")
+        
+        if miner_network_reporter:
+            logger.info("Shutting down miner network reporter...")
+            try:
+                await miner_network_reporter.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping miner network reporter: {e}")
         
         if metagraph_refresh_task:
             logger.info("Shutting down metagraph refresh task...")

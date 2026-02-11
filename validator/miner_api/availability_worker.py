@@ -22,6 +22,7 @@ from loguru import logger
 from fiber.chain.models import Node
 from fiber.validator.client import construct_server_address
 from validator.db.operations import DatabaseManager
+from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
 
 # Maximum concurrent availability checks
 MAX_CONCURRENT_AVAILABILITY_CHECKS = 20
@@ -142,7 +143,7 @@ async def check_miner_availability_async(
         return False
     
     try:
-        server_address = construct_server_address(node_with_ip, replace_with_localhost=replace_localhost)
+        server_address = construct_server_address_with_ipv6(node_with_ip, replace_with_localhost=replace_localhost)
     except Exception as e:
         logger.warning(f"Failed to construct server address for node {node.node_id}: {e}")
         db_manager.log_miner(

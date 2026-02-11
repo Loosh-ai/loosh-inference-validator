@@ -100,6 +100,8 @@ def create_test_validator_config(yaml_config: Optional[Dict[str, Any]] = None) -
         yaml_config = load_test_config_yaml()
     
     # Create test environment variables
+    # NOTE: Operational parameters (miner selection, challenge timing, scoring, weights)
+    # are now hard-coded in validator/internal_config.py and cannot be overridden via env.
     test_env = {
         'NETUID': str(yaml_config.get('netuid', 21)),
         'SUBTENSOR_NETWORK': yaml_config.get('network', 'finney'),
@@ -108,17 +110,8 @@ def create_test_validator_config(yaml_config: Optional[Dict[str, Any]] = None) -
         'HOTKEY_NAME': yaml_config.get('wallet', {}).get('hotkey', 'test_validator'),
         'DB_PATH': yaml_config.get('database', {}).get('path', './test_validator.db'),
         'USERS_DB_PATH': yaml_config.get('database', {}).get('users_path', './test_users.db'),
-        'CHALLENGE_INTERVAL_SECONDS': str(yaml_config.get('challenge', {}).get('interval_seconds', 60)),
-        'CHALLENGE_TIMEOUT_SECONDS': str(yaml_config.get('challenge', {}).get('timeout_seconds', 30)),
-        'EVALUATION_TIMEOUT_SECONDS': str(yaml_config.get('challenge', {}).get('evaluation_timeout_seconds', 60)),
-        'MIN_MINERS': str(yaml_config.get('challenge', {}).get('min_miners', 1)),
-        'MAX_MINERS': str(yaml_config.get('challenge', {}).get('max_miners', 3)),
-        'MIN_STAKE_THRESHOLD': str(yaml_config.get('challenge', {}).get('min_stake_threshold', 10)),
-        'DEFAULT_MODEL': yaml_config.get('llm', {}).get('default_model', 'microsoft/Phi3-512'),
-        'DEFAULT_MAX_TOKENS': str(yaml_config.get('llm', {}).get('default_max_tokens', 128)),
-        'DEFAULT_TEMPERATURE': str(yaml_config.get('llm', {}).get('default_temperature', 0.7)),
-        'DEFAULT_TOP_P': str(yaml_config.get('llm', {}).get('default_top_p', 0.95)),
-        'SCORE_THRESHOLD': str(yaml_config.get('evaluation', {}).get('score_threshold', 0.5)),
+        # NOTE: LLM behavior params (DEFAULT_MODEL, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
+        # DEFAULT_TOP_P) are now hard-coded in validator/internal_config.py for network consistency.
         'HEATMAP_UPLOAD_URL': yaml_config.get('evaluation', {}).get('heatmap_upload_url', 'http://localhost:8080/upload'),
         'LLM_API_URL': yaml_config.get('evaluation', {}).get('llm_api_url', 'https://your-inference-endpoint/v1/chat/completions'),
         'LLM_MODEL': yaml_config.get('evaluation', {}).get('llm_model', 'microsoft/Phi3-512'),
@@ -127,7 +120,6 @@ def create_test_validator_config(yaml_config: Optional[Dict[str, Any]] = None) -
         'API_HOST': yaml_config.get('api', {}).get('host', '127.0.0.1'),
         'API_PORT': str(yaml_config.get('api', {}).get('port', 8001)),
         'LOG_LEVEL': yaml_config.get('logging', {}).get('level', 'DEBUG'),
-        'WEIGHTS_INTERVAL_SECONDS': str(yaml_config.get('scoring', {}).get('weights_interval_seconds', 300)),
     }
     
     return test_env
@@ -167,12 +159,13 @@ def test_bittensor_config():
         
         # Test validator config
         validator_config = get_validator_config()
+        from validator.internal_config import INTERNAL_CONFIG
         print(f"✓ Validator config loaded successfully")
         print(f"  - NetUID: {validator_config.netuid}")
         print(f"  - Network: {validator_config.subtensor_network}")
         print(f"  - Wallet: {validator_config.wallet_name}/{validator_config.hotkey_name}")
-        print(f"  - Challenge Interval: {validator_config.challenge_interval}")
-        print(f"  - Default Model: {validator_config.default_model}")
+        print(f"  - Challenge Interval: {INTERNAL_CONFIG.challenge_interval} (internal)")
+        print(f"  - Default Model: {INTERNAL_CONFIG.DEFAULT_MODEL} (internal)")
         
         # Test test-specific settings
         test_settings = yaml_config.get('test', {})

@@ -10,12 +10,17 @@ from sqlalchemy.orm import declarative_base, relationship
 Base = declarative_base()
 
 class Miner(Base):
-    """Table for storing miner information."""
+    """Table for storing miner information.
+    
+    UID COMPRESSION SAFETY: hotkey is the primary persistent identifier.
+    node_id (UID) is stored as an informational snapshot — it changes on UID
+    compression/trimming and MUST NOT be used for persistent lookups or as a unique key.
+    """
     __tablename__ = "miners"
 
     id = Column(Integer, primary_key=True)
-    hotkey = Column(String, unique=True, nullable=False)
-    node_id = Column(Integer, unique=True, nullable=False)
+    hotkey = Column(String, unique=True, nullable=False)  # PRIMARY persistent identity (SS58 address)
+    node_id = Column(Integer, nullable=True)  # Informational snapshot only — NOT unique, changes on UID compression
     ip = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     stake = Column(Float, nullable=False)

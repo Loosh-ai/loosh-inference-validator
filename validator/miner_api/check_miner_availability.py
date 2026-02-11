@@ -11,10 +11,8 @@ from loguru import logger
 from fiber.chain.models import Node
 from fiber.validator.client import construct_server_address
 from validator.db.operations import DatabaseManager
-
-# Note: MAX_MINERS is now passed as a parameter to get_available_nodes
-# This constant is kept for backward compatibility but should not be used
-_DEFAULT_MAX_MINERS = 3
+from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
+from validator.internal_config import MAX_MINERS as _INTERNAL_MAX_MINERS
 
 # Maximum concurrent availability checks to prevent connection pool exhaustion
 # This limits how many nodes we check in parallel
@@ -88,7 +86,7 @@ async def check_miner_availability(
     # Use replace_with_localhost=True for local development when chain returns 0.0.0.1
     # Also handle 127.0.0.1 and 0.0.0.0 for local development
     replace_localhost = ip_str in ("0.0.0.1", "127.0.0.1", "0.0.0.0")
-    server_address = construct_server_address(node_with_ip, replace_with_localhost=replace_localhost)
+    server_address = construct_server_address_with_ipv6(node_with_ip, replace_with_localhost=replace_localhost)
     availability_url = f"{server_address}/availability"
     start_time = time.time()
     
@@ -256,7 +254,7 @@ async def get_available_nodes(
     db_manager: DatabaseManager,
     hotkey: str,
     max_concurrent: int = MAX_CONCURRENT_AVAILABILITY_CHECKS,
-    max_miners: int = _DEFAULT_MAX_MINERS
+    max_miners: int = _INTERNAL_MAX_MINERS
 ) -> List[Node]:
     """
     Check availability of all nodes and return available ones up to max_miners.

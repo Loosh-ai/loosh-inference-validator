@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
+import json
 import time
 
 from loguru import logger
@@ -15,6 +16,7 @@ from validator.challenge_api.models import (
 )
 from validator.network.fiber_client import ValidatorFiberClient
 from validator.evaluation.evaluation import InferenceValidator
+from validator.network.challenge_api_auth import merge_auth_headers
 
 # Global Fiber client cache (per validator hotkey and Challenge API endpoint)
 _fiber_client_cache: Dict[str, ValidatorFiberClient] = {}
@@ -54,7 +56,6 @@ async def update_challenge_response(
         if cache_key not in _fiber_client_cache:
             _fiber_client_cache[cache_key] = ValidatorFiberClient(
                 validator_hotkey_ss58=validator_hotkey,
-                private_key=None,  # TODO: Load from Bittensor wallet
                 key_ttl_seconds=3600,
                 handshake_timeout_seconds=30
             )
@@ -151,7 +152,6 @@ async def submit_response_batch(
             if cache_key not in _fiber_client_cache:
                 _fiber_client_cache[cache_key] = ValidatorFiberClient(
                     validator_hotkey_ss58=batch.validator_hotkey,
-                    private_key=None,  # TODO: Load from Bittensor wallet
                     key_ttl_seconds=3600,
                     handshake_timeout_seconds=30
                 )
@@ -180,18 +180,19 @@ async def submit_response_batch(
         
         # Fallback to plain HTTP (for backward compatibility or if Fiber fails)
         url = f"{server_address.rstrip('/')}/response/batch"
-        headers = {
-            "X-API-Key": api_key,
+        body_bytes = json.dumps(batch_data).encode()
+        base_headers = {
             "x-validator-hotkey": batch.validator_hotkey,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
+        headers = merge_auth_headers(base_headers, body=body_bytes, api_key=api_key)
         
         logger.info(
             f"[BATCH] Submitting {len(batch.responses)} responses for challenge {batch.challenge_id} "
             f"to {url} (plain HTTP)"
         )
         
-        response = await client.post(url, json=batch_data, headers=headers, timeout=30.0)
+        response = await client.post(url, content=body_bytes, headers=headers, timeout=30.0)
         
         if response.status_code == 201:
             elapsed_ms = int((time.time() - start_time) * 1000)
@@ -389,13 +390,14 @@ async def process_challenge_results(
             return
     
     try:
-        # Extract responses and miner IDs
+        # Extract responses, miner UIDs (for ConsensusEngine labels), and hotkeys (for persistent identity)
         responses = [resp for _, resp in collected_responses]
         miner_ids = [task.node_id for task, _ in collected_responses]
+        miner_hotkeys = [task.miner_hotkey for task, _ in collected_responses]
         
         logger.info(
             f"[EVALUATION] Running consensus evaluation on {len(responses)} responses "
-            f"from miners {miner_ids} for challenge {challenge_id or 'unknown'}"
+            f"from miners {[hk[:16] + '...' for hk in miner_hotkeys]} for challenge {challenge_id or 'unknown'}"
         )
         
         # Get challenge ID as integer (if it's a UUID string, we'll use a hash)
@@ -412,11 +414,14 @@ async def process_challenge_results(
             validator_eval_stage = pipeline_timing.add_stage(PipelineStages.VALIDATOR_EVALUATION)
         
         # Run evaluation (pass validator_hotkey for Fiber-encrypted heatmap upload)
+        # NOTE: miner_ids (UIDs) are passed for ConsensusEngine internal labels.
+        # miner_hotkeys are passed for persistent identification in emissions and sybil detection.
         consensus_score, heatmap_path, narrative, emissions = await validator.evaluate_responses(
             challenge_id=challenge_id_int,
             prompt=challenge_prompt,
             responses=responses,
             miner_ids=miner_ids,
+            miner_hotkeys=miner_hotkeys,
             correlation_id=correlation_id,
             validator_hotkey=validator_hotkey
         )
@@ -433,12 +438,15 @@ async def process_challenge_results(
         )
         
         # Find the best response (highest emission score)
-        best_miner_id = max(emissions.items(), key=lambda x: x[1])[0] if emissions else str(miner_ids[0])
+        # NOTE: emissions dict is now keyed by hotkey (persistent SS58 address)
+        best_miner_id = max(emissions.items(), key=lambda x: x[1])[0] if emissions else miner_hotkeys[0]
         
         # Get challenge_id UUID for submission
         challenge_id_uuid = collected_responses[0][0].challenge_orig.id if hasattr(collected_responses[0][0].challenge_orig, 'id') else challenge_id
         
         # Build response batch with ALL responses (F3)
+        # NOTE: miner_id uses HOTKEY (persistent SS58 address) for UID compression safety.
+        # miner_uid is informational only (transient, changes on UID compression).
         miner_response_data_list = []
         for task, response in collected_responses:
             # Extract usage from miner response if available
@@ -453,13 +461,9 @@ async def process_challenge_results(
                         total_tokens=response.usage.total_tokens or 0
                     )
             
-            # Use node_id as miner_id to match emissions dict keys
-            # (emissions dict uses node_id as keys from evaluate_responses)
-            miner_id_str = str(task.node_id)
-            
             miner_response_data_list.append(MinerResponseData(
-                miner_id=miner_id_str,
-                miner_uid=task.node_id,
+                miner_id=task.miner_hotkey,  # Hotkey (persistent identity) — NOT UID
+                miner_uid=task.node_id,      # Informational snapshot only
                 text=response.response_text,
                 tool_calls=getattr(response, 'tool_calls', None),
                 finish_reason=getattr(response, 'finish_reason', 'stop'),

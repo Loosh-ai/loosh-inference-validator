@@ -346,32 +346,18 @@ CHALLENGE_API_KEY=your-api-key-here
 CHALLENGE_PUSH_API_KEY=
 
 # =============================================================================
-# Miner Selection Parameters
+# Internal Configuration (NOT CONFIGURABLE VIA ENVIRONMENT)
 # =============================================================================
-MIN_MINERS=3
-MAX_MINERS=10
-MIN_STAKE_THRESHOLD=100
-
+# The following parameters are hard-coded in validator/internal_config.py
+# for network consistency. They CANNOT be changed via environment variables.
+#
+# Miner Selection: MIN_MINERS=3, MAX_MINERS=10, MIN_STAKE_THRESHOLD=100
+# Challenge Timing: CHALLENGE_INTERVAL=300s, TIMEOUT=120s, EVAL_TIMEOUT=300s
+# Scoring: SCORE_THRESHOLD=0.7
+# Weight Setting: WEIGHTS_INTERVAL=4320s (72 min)
+#
+# To modify these values, edit internal_config.py directly and redeploy.
 # =============================================================================
-# Challenge Parameters (in seconds)
-# =============================================================================
-# Mainnet: 300 seconds between challenges
-CHALLENGE_INTERVAL_SECONDS=300
-# Timeout for miner responses
-CHALLENGE_TIMEOUT_SECONDS=120
-# Evaluation timeout
-EVALUATION_TIMEOUT_SECONDS=300
-
-# =============================================================================
-# Scoring Parameters
-# =============================================================================
-SCORE_THRESHOLD=0.7
-
-# =============================================================================
-# Weights Update Interval
-# =============================================================================
-# Update weights on-chain every 30 minutes
-WEIGHTS_INTERVAL_SECONDS=1800
 
 # =============================================================================
 # Database Configuration
@@ -864,7 +850,8 @@ MAX_CONCURRENT_CHALLENGES=10  # Reduce concurrency to allow more compute per cha
 # In .env
 MAX_CONCURRENT_CHALLENGES=5
 MAX_CONCURRENT_AVAILABILITY_CHECKS=10
-CHALLENGE_TIMEOUT_SECONDS=180  # More lenient timeouts
+# Note: CHALLENGE_TIMEOUT_SECONDS is now internal (120s)
+# and cannot be changed via environment variable
 ```
 
 ## Security Best Practices

@@ -13,16 +13,156 @@ from sentence_transformers import SentenceTransformer
 from validator.challenge.challenge_types import InferenceResponse
 from validator.db.operations import DatabaseManager
 from validator.config import get_validator_config
+from validator.network.challenge_api_auth import get_auth_headers
+from validator.internal_config import (
+    SENTENCE_TRANSFORMER_MODEL,
+    ENABLE_NARRATIVE_GENERATION,
+    ENABLE_HEATMAP_GENERATION,
+    ENABLE_QUALITY_PLOTS,
+    EMBEDDING_FP16_ENABLED,
+    EMBEDDING_SENTENCE_LEVEL,
+    EMBEDDING_MAX_SEQ_LENGTH_DOC,
+    EMBEDDING_BATCH_SIZE_DOC,
+    EMBEDDING_BATCH_SIZE_SENTENCE,
+    SENTENCE_LEVEL_RELEVANCE_GATE,
+    QUALITY_SENTENCE_RELEVANCE_WEIGHT,
+    QUALITY_MIN_SENTENCE_WORDS,
+    QUALITY_COHERENCE_EMBEDDING_CHAIN,
+    QUALITY_PROMPT_COVERAGE_ENABLED,
+    QUALITY_COVERAGE_THRESHOLD,
+    QUALITY_COMPLEXITY_ENABLED,
+    QUALITY_BREAK_THRESHOLD,
+    QUALITY_COHERENCE_LOCAL_WEIGHT,
+    QUALITY_COHERENCE_GLOBAL_WEIGHT,
+    QUALITY_RELEVANCE_DOC_BLEND,
+    QUALITY_RELEVANCE_SENTENCE_BLEND,
+    QUALITY_RELEVANCE_COVERAGE_BLEND,
+    QUALITY_COMPLEXITY_RELEVANCE_GATE,
+    QUALITY_COMPLEXITY_COHERENCE_GATE,
+    QUALITY_COMPLEXITY_TARGET_STEPS,
+    QUALITY_COMPLEXITY_SCALE,
+    QUALITY_COMPLEXITY_DISTANCE_THRESHOLD,
+    QUALITY_COMPLEXITY_STEP_WEIGHT,
+    QUALITY_COMPLEXITY_NOVELTY_WEIGHT,
+    # Entity-Based Voting Caps
+    ENTITY_VOTING_CAPS_ENABLED,
+    ENTITY_MAX_VOTES,
+    ENTITY_MIN_GROUP_SIZE,
+    # Sybil detection thresholds (MPNet-calibrated)
+    SYBIL_MIN_HIGH_THRESHOLD,
+    SYBIL_MIN_VERY_HIGH_THRESHOLD,
+    SYBIL_HIGH_SIMILARITY_PERCENTILE,
+    SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE,
+    SYBIL_MIN_RESPONSE_LENGTH,
+    SYBIL_MIN_INTERNAL_SIMILARITY,
+    SYBIL_FUSION_SEMANTIC_THRESHOLD,
+    SYBIL_FUSION_LEXICAL_THRESHOLD,
+    SYBIL_FUSION_STRUCTURE_THRESHOLD,
+    SYBIL_TRAJECTORY_THRESHOLD,
+    SYBIL_TRAJECTORY_N_CLUSTERS,
+    # Migration
+    FALLBACK_MODEL,
+)
 from validator.network.fiber_client import ValidatorFiberClient
 
 # Import from local evaluation modules
 from .Evaluation.consensus_engine import ConsensusEngine, ConsensusConfig, ConsensusResult
+from .Evaluation.quality_scorer import EvaluationQualityScorer
 from .Recording.consensus_narrative_generator import ConsensusNarrativeGenerator, LLMConfig
 from .Recording.similarity_heatmap import generate_semantic_similarity_heatmap
 from .sybil_detection import SybilDetector, SybilDetectionResult
 
 # Fiber client cache for heatmap uploads
 _heatmap_fiber_client_cache: Dict[str, ValidatorFiberClient] = {}
+
+
+# =========================================================================
+# Entity-Based Voting Caps
+# =========================================================================
+
+def cap_entity_contributions(
+    miner_hotkeys: List[str],
+    node_map: Dict[str, Tuple[str, str]],
+    max_entity_votes: float = ENTITY_MAX_VOTES,
+    min_group_size: int = ENTITY_MIN_GROUP_SIZE,
+) -> Dict[str, float]:
+    """Compute per-miner weight multipliers that limit sybil entity influence.
+
+    An *entity* is a group of miners sharing the same IP address (strongest
+    signal) or coldkey (weaker signal, applied second).  IP-based grouping
+    takes priority: miners already capped by an IP group are not
+    double-counted in coldkey groups.
+
+    For each entity group with *N* members (N >= ``min_group_size``), every
+    member receives a weight multiplier of ``min(1.0, max_entity_votes / N)``.
+    Solo miners (unique IP **and** coldkey) retain a weight of 1.0.
+
+    Args:
+        miner_hotkeys: Ordered list of miner hotkeys participating in this
+            challenge round.
+        node_map: Mapping of ``hotkey → (ip_address, coldkey)``.  Typically
+            built from the latest metagraph snapshot.
+        max_entity_votes: Maximum effective votes per entity group regardless
+            of group size.
+        min_group_size: Groups smaller than this are treated as individuals.
+
+    Returns:
+        ``{hotkey: weight}`` where weight ∈ (0.0, 1.0].  Only hotkeys present
+        in *miner_hotkeys* appear in the result.
+    """
+    # Default all weights to 1.0
+    weights: Dict[str, float] = {hk: 1.0 for hk in miner_hotkeys}
+
+    # Filter to miners we actually have node data for
+    participating = [hk for hk in miner_hotkeys if hk in node_map]
+    if not participating:
+        return weights
+
+    # --- Phase 1: IP-based grouping (strongest signal) ---
+    ip_groups: Dict[str, List[str]] = {}
+    for hk in participating:
+        ip, _ = node_map[hk]
+        if ip and ip not in ("0", "0.0.0.0"):
+            ip_groups.setdefault(ip, []).append(hk)
+
+    ip_capped: set = set()  # hotkeys already handled by IP grouping
+    for ip, members in ip_groups.items():
+        n = len(members)
+        if n < min_group_size:
+            continue
+        cap = min(1.0, max_entity_votes / n)
+        for hk in members:
+            weights[hk] = cap
+            ip_capped.add(hk)
+        logger.info(
+            f"[ENTITY-CAP] IP group {ip}: {n} miners → weight={cap:.3f} "
+            f"(max_votes={max_entity_votes})"
+        )
+
+    # --- Phase 2: Coldkey-based grouping (weaker signal, secondary) ---
+    # Only applies to miners NOT already capped by IP grouping.
+    ck_groups: Dict[str, List[str]] = {}
+    for hk in participating:
+        if hk in ip_capped:
+            continue
+        _, coldkey = node_map[hk]
+        if coldkey:
+            ck_groups.setdefault(coldkey, []).append(hk)
+
+    for ck, members in ck_groups.items():
+        n = len(members)
+        if n < min_group_size:
+            continue
+        cap = min(1.0, max_entity_votes / n)
+        for hk in members:
+            weights[hk] = min(weights[hk], cap)  # Don't increase existing cap
+        logger.info(
+            f"[ENTITY-CAP] Coldkey group {ck[:16]}...: {n} miners → weight={cap:.3f} "
+            f"(max_votes={max_entity_votes})"
+        )
+
+    return weights
+
 
 class InferenceValidator:
     """Validator for inference responses."""
@@ -34,9 +174,36 @@ class InferenceValidator:
         # Load configuration
         self.config = get_validator_config()
         
-        # Initialize embedding model from config
-        self.embedding_model = SentenceTransformer(self.config.sentence_transformer_model)
-        logger.info(f"Loaded sentence transformer model: {self.config.sentence_transformer_model}")
+        # Node map for entity-based voting caps: hotkey → (ip, coldkey)
+        # Updated externally via update_node_map() on each metagraph refresh.
+        self._node_map: Dict[str, Tuple[str, str]] = {}
+        
+        # Initialize embedding model with fallback
+        self.embedding_model = self._init_embedder_with_fallback()
+        
+        # Initialize enhanced quality scorer (Tier 4+5) with ALL configurable params
+        self.quality_scorer = EvaluationQualityScorer(
+            sentence_relevance_weight=QUALITY_SENTENCE_RELEVANCE_WEIGHT,
+            min_sentence_words=QUALITY_MIN_SENTENCE_WORDS,
+            coverage_threshold=QUALITY_COVERAGE_THRESHOLD,
+            coherence_embedding_chain=QUALITY_COHERENCE_EMBEDDING_CHAIN,
+            complexity_enabled=QUALITY_COMPLEXITY_ENABLED,
+            coverage_enabled=QUALITY_PROMPT_COVERAGE_ENABLED,
+            break_threshold=QUALITY_BREAK_THRESHOLD,
+            coherence_local_weight=QUALITY_COHERENCE_LOCAL_WEIGHT,
+            coherence_global_weight=QUALITY_COHERENCE_GLOBAL_WEIGHT,
+            relevance_doc_blend=QUALITY_RELEVANCE_DOC_BLEND,
+            relevance_sentence_blend=QUALITY_RELEVANCE_SENTENCE_BLEND,
+            relevance_coverage_blend=QUALITY_RELEVANCE_COVERAGE_BLEND,
+            complexity_relevance_gate=QUALITY_COMPLEXITY_RELEVANCE_GATE,
+            complexity_coherence_gate=QUALITY_COMPLEXITY_COHERENCE_GATE,
+            complexity_target_steps=QUALITY_COMPLEXITY_TARGET_STEPS,
+            complexity_scale=QUALITY_COMPLEXITY_SCALE,
+            complexity_distance_threshold=QUALITY_COMPLEXITY_DISTANCE_THRESHOLD,
+            complexity_step_weight=QUALITY_COMPLEXITY_STEP_WEIGHT,
+            complexity_novelty_weight=QUALITY_COMPLEXITY_NOVELTY_WEIGHT,
+        )
+        logger.info("Enhanced quality scorer (Tier 4+5) initialized")
         
         # Initialize narrative generator with LLM config (only if enabled)
         # IMPORTANT: The API endpoint must implement OpenAI Chat Completions API format
@@ -44,7 +211,7 @@ class InferenceValidator:
         # The API interface must be compatible, but the underlying model does NOT need to be an OpenAI model.
         # Get API key from config or environment
         self.narrative_generator = None
-        if self.config.enable_narrative_generation:
+        if ENABLE_NARRATIVE_GENERATION:
             api_key = getattr(self.config, 'llm_api_key', None) or os.getenv("LLM_API_KEY")
             
             self.narrative_generator = ConsensusNarrativeGenerator(
@@ -60,19 +227,116 @@ class InferenceValidator:
         else:
             logger.info("Narrative generation disabled - evaluation and heatmap generation will still run")
         
-        # Initialize sybil detector
+        # Initialize sybil detector with adaptive MPNet-calibrated thresholds
         self.sybil_detector = SybilDetector(
-            high_similarity_threshold=0.95,
-            very_high_similarity_threshold=0.98,
-            min_group_size=2
+            min_high_threshold=SYBIL_MIN_HIGH_THRESHOLD,
+            min_very_high_threshold=SYBIL_MIN_VERY_HIGH_THRESHOLD,
+            high_similarity_percentile=SYBIL_HIGH_SIMILARITY_PERCENTILE,
+            very_high_similarity_percentile=SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE,
+            min_response_length=SYBIL_MIN_RESPONSE_LENGTH,
+            min_group_size=2,
+            min_internal_similarity=SYBIL_MIN_INTERNAL_SIMILARITY,
+            fusion_semantic_threshold=SYBIL_FUSION_SEMANTIC_THRESHOLD,
+            fusion_lexical_threshold=SYBIL_FUSION_LEXICAL_THRESHOLD,
+            fusion_structure_threshold=SYBIL_FUSION_STRUCTURE_THRESHOLD,
+            trajectory_threshold=SYBIL_TRAJECTORY_THRESHOLD,
+            trajectory_n_clusters=SYBIL_TRAJECTORY_N_CLUSTERS,
         )
     
+    # ── Model initialisation helpers ──────────────────────────────────
+
+    @staticmethod
+    def _init_embedder_with_fallback() -> SentenceTransformer:
+        """Load the primary embedding model with GPU check and MiniLM fallback.
+
+        1. Attempts to load ``SENTENCE_TRANSFORMER_MODEL`` (MPNet by default).
+        2. If ``EMBEDDING_FP16_ENABLED`` and a CUDA GPU is available, converts
+           the model to half-precision.
+        3. If the primary model fails to load, falls back to ``FALLBACK_MODEL``
+           (MiniLM).
+        """
+        import torch
+
+        def _load_and_configure(model_name: str) -> SentenceTransformer:
+            model = SentenceTransformer(model_name)
+            # Apply max_seq_length from config
+            model.max_seq_length = EMBEDDING_MAX_SEQ_LENGTH_DOC
+            if EMBEDDING_FP16_ENABLED and torch.cuda.is_available():
+                try:
+                    model.half()
+                    logger.info(
+                        f"Loaded {model_name} (FP16 on CUDA)"
+                    )
+                except Exception as e:
+                    logger.warning(f"FP16 conversion failed ({e}), using FP32")
+                    logger.info(f"Loaded {model_name} (FP32)")
+            else:
+                device_info = "CUDA" if torch.cuda.is_available() else "CPU"
+                logger.info(f"Loaded {model_name} (FP32, {device_info})")
+            return model
+
+        try:
+            return _load_and_configure(SENTENCE_TRANSFORMER_MODEL)
+        except Exception as e:
+            logger.error(
+                f"Primary model {SENTENCE_TRANSFORMER_MODEL} failed to load: {e}. "
+                f"Falling back to {FALLBACK_MODEL}"
+            )
+            return _load_and_configure(FALLBACK_MODEL)
+
+    def update_node_map(self, nodes: List[Any]) -> None:
+        """Rebuild the internal ``hotkey → (ip, coldkey)`` mapping from a
+        fresh metagraph snapshot.
+
+        Call this on every metagraph refresh so that entity-based voting caps
+        use up-to-date network topology.
+
+        Args:
+            nodes: List of ``fiber.chain.models.Node`` (or any object with
+                ``hotkey``, ``ip``, and ``coldkey`` attributes).
+        """
+        new_map: Dict[str, Tuple[str, str]] = {}
+        for node in nodes:
+            hk = getattr(node, "hotkey", None)
+            ip = getattr(node, "ip", "") or ""
+            ck = getattr(node, "coldkey", "") or ""
+            if hk:
+                new_map[hk] = (str(ip), str(ck))
+        self._node_map = new_map
+        logger.debug(f"[ENTITY-CAP] Node map updated: {len(new_map)} entries")
+
+    def _embed_batch(
+        self,
+        texts: List[str],
+        *,
+        batch_size: Optional[int] = None,
+        normalize: bool = True,
+    ) -> np.ndarray:
+        """Embed a list of texts with ``normalize_embeddings=True`` by default.
+
+        Parameters
+        ----------
+        texts : list of str
+        batch_size : int, optional
+            Defaults to ``EMBEDDING_BATCH_SIZE_DOC``.
+        normalize : bool
+            When True, outputs are L2-normalised so dot product == cosine.
+        """
+        bs = batch_size or EMBEDDING_BATCH_SIZE_DOC
+        return self.embedding_model.encode(
+            texts,
+            batch_size=bs,
+            convert_to_numpy=True,
+            normalize_embeddings=normalize,
+        )
+
     async def evaluate_responses(
         self,
         challenge_id: int,
         prompt: str,
         responses: List[InferenceResponse],
         miner_ids: Optional[List[int]] = None,
+        miner_hotkeys: Optional[List[str]] = None,
         correlation_id: Optional[str] = None,
         validator_hotkey: Optional[str] = None
     ) -> Tuple[float, Optional[str], Optional[str], Dict[str, float]]:
@@ -83,6 +347,10 @@ class InferenceValidator:
             prompt: The original prompt
             responses: List of inference responses
             miner_ids: Optional list of miner UIDs corresponding to each response
+                       (used internally for ConsensusEngine labels; NOT for persistent identification)
+            miner_hotkeys: Optional list of miner hotkeys (SS58 addresses) corresponding to each response.
+                           Used as the primary persistent identifier for emissions dict keys and sybil detection.
+                           If not provided, falls back to str(miner_id) for backward compatibility.
             correlation_id: Optional correlation ID for tracking
             validator_hotkey: Optional validator hotkey SS58 for Fiber encryption
         
@@ -91,7 +359,7 @@ class InferenceValidator:
             - Consensus score
             - Path to heatmap image
             - Narrative of consensus
-            - Emissions allocation
+            - Emissions allocation (keyed by miner hotkey when miner_hotkeys provided, else str(miner_id))
         """
         # Store validator_hotkey for use in _upload_heatmap
         self._validator_hotkey = validator_hotkey
@@ -104,16 +372,80 @@ class InferenceValidator:
                 logger.warning(f"[EVALUATION] No responses provided for challenge {challenge_id}")
                 return 0.0, None, None, {}
             
-            if num_responses == 1:
-                logger.info(f"[EVALUATION] Only 1 response received - using simple scoring (no consensus evaluation possible)")
+            # Filter out test mode responses BEFORE evaluation
+            # Test mode responses should receive zero emissions
+            valid_responses = []
+            valid_miner_ids = []
+            valid_miner_hotkeys = []
+            test_mode_miners = []  # List of hotkeys (or fallback UIDs) for test mode miners
+            
+            for i, response in enumerate(responses):
+                # Check if response indicates test mode
+                response_text = response.response_text.strip()
+                if response_text.startswith("[TEST MODE]"):
+                    # Use hotkey as primary identifier, fallback to UID string
+                    miner_key = (miner_hotkeys[i] if miner_hotkeys and i < len(miner_hotkeys)
+                                 else str(miner_ids[i]) if miner_ids and i < len(miner_ids)
+                                 else str(i))
+                    test_mode_miners.append(miner_key)
+                    logger.warning(
+                        f"[EVALUATION] Miner {miner_key[:16]}... returned test mode response - "
+                        f"will receive ZERO emissions. Response: {response_text[:100]}"
+                    )
+                else:
+                    valid_responses.append(response)
+                    if miner_ids and i < len(miner_ids):
+                        valid_miner_ids.append(miner_ids[i])
+                    if miner_hotkeys and i < len(miner_hotkeys):
+                        valid_miner_hotkeys.append(miner_hotkeys[i])
+            
+            # If all responses are test mode, return zero emissions for all
+            if not valid_responses:
+                logger.warning(
+                    f"[EVALUATION] All {num_responses} responses were test mode - "
+                    f"no valid responses to evaluate"
+                )
+                zero_emissions = {miner_key: 0.0 for miner_key in test_mode_miners}
+                
+                # Log evaluation result with zero emissions
+                self.db_manager.log_evaluation_result(
+                    challenge_id=challenge_id,
+                    consensus_score=0.0,
+                    heatmap_path=None,
+                    narrative="All responses were test mode - no evaluation performed",
+                    emissions=zero_emissions
+                )
+                
+                return 0.0, None, None, zero_emissions
+            
+            # If we filtered out test mode responses, log it
+            if test_mode_miners:
+                logger.info(
+                    f"[EVALUATION] Filtered out {len(test_mode_miners)} test mode responses. "
+                    f"Evaluating {len(valid_responses)} valid responses. "
+                    f"Test mode miners: {test_mode_miners}"
+                )
+            
+            # Continue evaluation with only valid responses
+            num_valid = len(valid_responses)
+            
+            if num_valid == 1:
+                logger.info(f"[EVALUATION] Only 1 valid response received - using simple scoring (no consensus evaluation possible)")
                 # For single response, return a default score and create simple emissions
-                single_response = responses[0]
-                emissions = {str(miner_ids[0] if miner_ids else 0): 1.0} if miner_ids else {"0": 1.0}
+                # Use hotkey as key when available, fallback to UID string
+                single_key = (valid_miner_hotkeys[0] if valid_miner_hotkeys
+                              else str(valid_miner_ids[0]) if valid_miner_ids
+                              else "0")
+                emissions = {single_key: 1.0}
+                
+                # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
+                for test_miner_key in test_mode_miners:
+                    emissions[test_miner_key] = 0.0
                 
                 # Log simple evaluation result
                 self.db_manager.log_evaluation_result(
                     challenge_id=challenge_id,
-                    consensus_score=1.0,  # Perfect score for single response
+                    consensus_score=1.0,  # Perfect score for single valid response
                     heatmap_path=None,
                     narrative=None,
                     emissions=emissions
@@ -122,18 +454,68 @@ class InferenceValidator:
                 logger.info(f"[EVALUATION] Single response evaluation complete - score: 1.0, emissions: {emissions}")
                 return 1.0, None, None, emissions
             
-            # Extract response texts and calculate embeddings
-            response_texts = [r.response_text for r in responses]
-            embeddings = self.embedding_model.encode(response_texts, convert_to_numpy=True)
+            # Extract response texts and calculate embeddings (only for valid responses)
+            # Uses normalize_embeddings=True so dot product == cosine similarity.
+            response_texts = [r.response_text for r in valid_responses]
+            embeddings = self._embed_batch(response_texts, batch_size=EMBEDDING_BATCH_SIZE_DOC)
+            
+            # CRITICAL: Generate prompt embedding for semantic quality assessment
+            prompt_embedding = self._embed_batch([prompt])[0]
             
             logger.debug(f"[EVALUATION] Generated embeddings: shape={embeddings.shape}")
             
-            # Create consensus engine with miner IDs for labels
+            # Build the embed_fn that quality_scorer / sybil_detector can use to
+            # embed arbitrary texts on demand (sentence-level, prompt components, etc.).
+            # Passes normalize_embeddings=True and sentence batch size.
+            def _embed_fn(texts: List[str]) -> np.ndarray:
+                return self._embed_batch(
+                    texts,
+                    batch_size=EMBEDDING_BATCH_SIZE_SENTENCE,
+                    normalize=True,
+                )
+            
+            # ── Entity-based voting caps ─────────────────────────────────
+            # Compute per-miner weight multipliers to limit sybil entity
+            # influence in consensus scoring.  Disabled miners (or those
+            # without node data) default to weight 1.0.
+            entity_weights_array: Optional[np.ndarray] = None
+            if (
+                ENTITY_VOTING_CAPS_ENABLED
+                and self._node_map
+                and valid_miner_hotkeys
+            ):
+                entity_weight_map = cap_entity_contributions(
+                    miner_hotkeys=valid_miner_hotkeys,
+                    node_map=self._node_map,
+                    max_entity_votes=ENTITY_MAX_VOTES,
+                    min_group_size=ENTITY_MIN_GROUP_SIZE,
+                )
+                entity_weights_array = np.array(
+                    [entity_weight_map.get(hk, 1.0) for hk in valid_miner_hotkeys],
+                    dtype=np.float64,
+                )
+                capped_count = int(np.sum(entity_weights_array < 1.0))
+                if capped_count > 0:
+                    logger.info(
+                        f"[ENTITY-CAP] {capped_count}/{len(valid_miner_hotkeys)} miners "
+                        f"capped by entity voting caps"
+                    )
+                else:
+                    logger.debug("[ENTITY-CAP] No miners capped (all unique entities)")
+            elif not ENTITY_VOTING_CAPS_ENABLED:
+                logger.debug("[ENTITY-CAP] Entity voting caps disabled by config")
+            
+            # Create consensus engine with miner IDs, prompt embedding, and
+            # the enhanced quality scorer (Tier 4+5) for embedding-aware metrics.
             consensus_engine = ConsensusEngine(
                 original_prompt=prompt,
                 responses=response_texts,
                 embeddings=embeddings,
-                miner_ids=miner_ids
+                miner_ids=valid_miner_ids,
+                prompt_embedding=prompt_embedding,  # For semantic quality assessment
+                quality_scorer=self.quality_scorer if EMBEDDING_SENTENCE_LEVEL else None,
+                embed_fn=_embed_fn,
+                entity_weights=entity_weights_array,
             )
             
             # Configure consensus evaluation
@@ -143,20 +525,20 @@ class InferenceValidator:
             min_responses_for_outlier_detection = 3
             min_responses_for_clustering = 2
             
-            use_outlier_detection = num_responses >= min_responses_for_outlier_detection
-            use_clustering = num_responses >= min_responses_for_clustering
+            use_outlier_detection = num_valid >= min_responses_for_outlier_detection
+            use_clustering = num_valid >= min_responses_for_clustering
             # Check config option and minimum response count
-            generate_heatmap = self.config.enable_heatmap_generation and num_responses >= 2  # Need at least 2 for meaningful heatmap
+            generate_heatmap = ENABLE_HEATMAP_GENERATION and num_valid >= 2  # Need at least 2 for meaningful heatmap
             
             if not use_outlier_detection:
-                logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_responses})")
+                logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_valid})")
             if not use_clustering:
-                logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_responses})")
+                logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_valid})")
             if not generate_heatmap:
-                if not self.config.enable_heatmap_generation:
+                if not ENABLE_HEATMAP_GENERATION:
                     logger.debug(f"[EVALUATION] Heatmap generation disabled by configuration")
                 else:
-                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_responses})")
+                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_valid})")
             
             # Use challenge_id (UUID) for heatmap filename, but include correlation_id in image title
             # challenge_id should be a UUID string, sanitize it for filename
@@ -169,15 +551,31 @@ class InferenceValidator:
                 use_clustering=use_clustering,
                 use_weighted_scoring=True,
                 use_outlier_detection=use_outlier_detection,
-                apply_quality_filter=True,
-                quality_sensitivity=0.7,
+                apply_quality_filter=False,  # Disable legacy word-length filter
+                quality_sensitivity=0.7,  # Deprecated - kept for backward compat
                 generate_heatmap=generate_heatmap,
-                generate_quality_plot=self.config.enable_quality_plots,
+                generate_quality_plot=ENABLE_QUALITY_PLOTS,
                 heatmap_path=f"temp/heatmap_{heatmap_id_safe}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png",
                 lambda_factor=1.0,
                 threshold_min=0.7,
                 challenge_id=str(challenge_id),  # Pass challenge_id (UUID) for image title
-                correlation_id=correlation_id  # Pass correlation_id for image title
+                correlation_id=correlation_id,  # Pass correlation_id for image title
+                # NEW: Semantic quality assessment (CRITICAL for garbage consensus prevention)
+                enable_semantic_quality=True,  # Enable semantic quality assessment
+                quality_threshold=0.35,  # Minimum quality score to participate in consensus
+                quality_prompt_relevance_weight=0.4,
+                quality_density_weight=0.2,
+                quality_specificity_weight=0.2,
+                quality_coherence_weight=0.2,
+                # Smart outlier detection
+                enable_smart_outlier_detection=True,
+                outlier_quality_delta=0.15,
+                # Diversity bonus
+                enable_diversity_bonus=True,
+                max_diversity_bonus=0.15,
+                # Garbage detection alerts
+                enable_garbage_alerts=True,
+                garbage_cluster_threshold=0.4
             )
             
             # Compute similarity matrix BEFORE consensus evaluation (before filtering)
@@ -187,22 +585,33 @@ class InferenceValidator:
             # Evaluate consensus (this may filter responses)
             result = consensus_engine.evaluate_consensus(config)
             
-            # Perform sybil detection analysis on ALL responses (before filtering)
-            # Only run sybil detection if we have at least 2 responses
+            # Perform sybil detection analysis on valid responses only
+            # Only run sybil detection if we have at least 2 valid responses
+            # NOTE: Sybil detection uses HOTKEYS as miner identifiers (not UIDs)
+            # for UID compression safety. Hotkeys are persistent SS58 addresses.
             sybil_result = None
-            if num_responses >= 2:
+            if num_valid >= 2:
                 try:
+                    # Use hotkeys for sybil detection (persistent identifier)
+                    # Fallback to str(uid) if hotkeys not available, then str(index)
+                    sybil_miner_ids = (
+                        valid_miner_hotkeys if valid_miner_hotkeys
+                        else [str(uid) for uid in valid_miner_ids] if valid_miner_ids
+                        else [str(i) for i in range(len(valid_responses))]
+                    )
                     sybil_result = self.sybil_detector.detect_sybil_patterns(
                         similarity_matrix=original_similarity_matrix,
-                        responses=responses,
-                        miner_ids=miner_ids if miner_ids else list(range(len(responses))),
-                        challenge_id=challenge_id
+                        responses=valid_responses,
+                        miner_ids=sybil_miner_ids,
+                        challenge_id=challenge_id,
+                        prompt=prompt,
+                        embed_fn=_embed_fn,
                     )
                 except Exception as e:
                     logger.warning(f"[EVALUATION] Sybil detection failed: {e}. Continuing without sybil detection.")
                     sybil_result = None
             else:
-                logger.debug(f"[EVALUATION] Sybil detection skipped (need 2+ responses, got {num_responses})")
+                logger.debug(f"[EVALUATION] Sybil detection skipped (need 2+ responses, got {num_valid})")
             
             # Log sybil detection results for analysis
             if sybil_result and (sybil_result.suspicious_pairs or sybil_result.suspicious_groups):
@@ -211,21 +620,23 @@ class InferenceValidator:
                 # Convert to JSON-serializable format for storage
                 suspicious_pairs_json = [
                     {
-                        "miner_id_1": pair.miner_id_1,
-                        "miner_id_2": pair.miner_id_2,
+                        "miner_hotkey_1": pair.miner_hotkey_1,
+                        "miner_hotkey_2": pair.miner_hotkey_2,
                         "similarity_score": pair.similarity_score,
                         "response_text_1": pair.response_text_1[:500],  # Truncate for storage
-                        "response_text_2": pair.response_text_2[:500]
+                        "response_text_2": pair.response_text_2[:500],
+                        "detection_method": pair.detection_method,
                     }
                     for pair in sybil_result.suspicious_pairs
                 ]
                 
                 suspicious_groups_json = [
                     {
-                        "miner_ids": sorted(list(group.miner_ids)),
+                        "miner_hotkeys": sorted(list(group.miner_hotkeys)),
                         "avg_similarity": group.avg_similarity,
                         "min_similarity": group.min_similarity,
                         "max_similarity": group.max_similarity,
+                        "min_internal_similarity": group.min_internal_similarity,
                         "response_texts": {
                             str(mid): text[:500]  # Truncate for storage
                             for mid, text in group.response_texts.items()
@@ -251,7 +662,7 @@ class InferenceValidator:
             
             # Generate narrative (now async) - only if enabled
             narrative = None
-            if self.config.enable_narrative_generation and self.narrative_generator:
+            if ENABLE_NARRATIVE_GENERATION and self.narrative_generator:
                 try:
                     narrative = await self.narrative_generator.generate_narrative(result)
                     result.consensus_narrative = narrative
@@ -267,8 +678,19 @@ class InferenceValidator:
             # Store individual scores before calculating emissions (they get overwritten)
             individual_scores = result.miner_scores if result.miner_scores else {}
             
-            # Calculate emissions
-            emissions = self._calculate_emissions(responses, result, miner_ids, individual_scores)
+            # Calculate emissions for valid responses
+            # NOTE: Emissions dict keys are miner HOTKEYS when miner_hotkeys are provided,
+            # for UID compression safety. Falls back to str(miner_id) if not available.
+            emissions = self._calculate_emissions(
+                valid_responses, result, valid_miner_ids, individual_scores,
+                miner_hotkeys=valid_miner_hotkeys if valid_miner_hotkeys else None
+            )
+            
+            # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
+            for test_miner_key in test_mode_miners:
+                emissions[test_miner_key] = 0.0
+                logger.info(f"[EVALUATION] Miner {test_miner_key[:16]}... test mode - emission set to 0.0")
+            
             result.miner_scores = emissions
             
             # Convert numpy float32/float64 values to Python float for JSON serialization
@@ -356,7 +778,8 @@ class InferenceValidator:
         responses: List[InferenceResponse],
         result: ConsensusResult,
         miner_ids: Optional[List[int]] = None,
-        individual_scores: Optional[Dict[str, float]] = None
+        individual_scores: Optional[Dict[str, float]] = None,
+        miner_hotkeys: Optional[List[str]] = None
     ) -> Dict[str, float]:
         """Calculate emissions allocation for miners.
         
@@ -364,7 +787,14 @@ class InferenceValidator:
             responses: List of inference responses
             result: Consensus evaluation result
             miner_ids: Optional list of miner UIDs corresponding to each response
+                       (used to derive consensus labels matching ConsensusEngine)
             individual_scores: Optional dict of individual response scores (label -> score)
+            miner_hotkeys: Optional list of miner hotkeys (SS58 addresses) for emissions dict keys.
+                           If provided, emissions are keyed by hotkey (UID compression safe).
+                           If not provided, falls back to str(miner_id) for backward compatibility.
+        
+        Returns:
+            Dict mapping miner identifier (hotkey preferred) to emission score.
         """
         # Base emissions on response time and consensus score
         total_time = sum(r.response_time_ms for r in responses)
@@ -380,8 +810,14 @@ class InferenceValidator:
             # Faster responses get more emissions
             time_ratio = 1 - (response.response_time_ms / total_time)
             
-            # Check if response is in consensus
-            response_label = f"R{i+1}"
+            # BUG FIX (t0-1): Use the ACTUAL label that ConsensusEngine assigns.
+            # When miner_ids are passed, ConsensusEngine labels are str(uid), not "R{i+1}".
+            # The label must match what's in result.in_consensus dict keys.
+            if miner_ids and i < len(miner_ids):
+                response_label = str(miner_ids[i])  # Matches ConsensusEngine label format
+            else:
+                response_label = f"R{i+1}"  # Default label when no miner_ids
+            
             in_consensus = response_label in result.in_consensus
             
             # Scale by consensus score and consensus status
@@ -394,9 +830,17 @@ class InferenceValidator:
             if highest_scoring_label and response_label == highest_scoring_label:
                 emission *= bonus_multiplier
             
-            # Use miner_id from the list if provided, otherwise use index
-            miner_id = miner_ids[i] if miner_ids and i < len(miner_ids) else i
-            emissions[str(miner_id)] = float(emission)  # Ensure Python float for JSON serialization
+            # UID COMPRESSION SAFETY (t0-3): Use hotkey as dict key when available.
+            # Hotkeys are persistent SS58 addresses that survive UID compression.
+            # Falls back to str(miner_id) if hotkeys not provided.
+            if miner_hotkeys and i < len(miner_hotkeys):
+                emission_key = miner_hotkeys[i]
+            elif miner_ids and i < len(miner_ids):
+                emission_key = str(miner_ids[i])
+            else:
+                emission_key = str(i)
+            
+            emissions[emission_key] = float(emission)  # Ensure Python float for JSON serialization
         
         return emissions
     
@@ -509,7 +953,6 @@ class InferenceValidator:
             if cache_key not in _heatmap_fiber_client_cache:
                 _heatmap_fiber_client_cache[cache_key] = ValidatorFiberClient(
                     validator_hotkey_ss58=validator_hotkey,
-                    private_key=None,  # TODO: Load from Bittensor wallet
                     key_ttl_seconds=3600,
                     handshake_timeout_seconds=30
                 )
@@ -570,9 +1013,12 @@ class InferenceValidator:
                 data.add_field("challenge_id", str(challenge_id))
                 data.add_field("file_type", file_type)
                 
-                headers = {
-                    "X-API-Key": self.config.challenge_api_key
-                }
+                # Prefer hotkey signature; fall back to API key.
+                # Multipart form-data can't be pre-hashed so we sign
+                # without body (nonce + hotkey) — still proves identity.
+                headers = get_auth_headers(body=None)
+                if not headers:
+                    headers = {"X-API-Key": self.config.challenge_api_key}
                 
                 async with session.post(upload_url, data=data, headers=headers) as response:
                     if response.status == 201:

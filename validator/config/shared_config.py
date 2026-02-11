@@ -1,10 +1,12 @@
 """
 Shared configuration models using Pydantic 2 with environment variable support.
 Validator-specific version - only includes validator-relevant configuration.
+
+IMPORTANT: Many operational parameters are NOT configurable via environment
+and are instead hard-coded in validator/internal_config.py for network consistency.
 """
 
 import os
-from datetime import timedelta
 from pathlib import Path
 from typing import Optional, Literal
 
@@ -50,15 +52,13 @@ class APIConfig(BaseConfig):
 
 
 class LLMConfig(BaseConfig):
-    """LLM configuration settings."""
+    """LLM configuration settings.
     
-    default_model: str = Field(
-        default="mistralai/Mistral-7B-v0.1",
-        description="Default model to use"
-    )
-    default_max_tokens: int = Field(default=512, description="Default max tokens")
-    default_temperature: float = Field(default=0.7, description="Default temperature")
-    default_top_p: float = Field(default=0.95, description="Default top-p value")
+    NOTE: LLM behavior params (DEFAULT_MODEL, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P) are now hard-coded in validator/internal_config.py for network consistency.
+    This class is kept for backward compatibility but contains no active fields.
+    """
+    pass
 
 
 class LoggingConfig(BaseConfig):
@@ -72,53 +72,27 @@ class LoggingConfig(BaseConfig):
 
 
 class ValidatorSpecificConfig(BaseConfig):
-    """Validator-specific configuration settings."""
+    """
+    Validator-specific configuration settings.
     
-    min_miners: int = Field(default=3, description="Minimum number of miners to select")
-    max_miners: int = Field(default=10, description="Maximum number of miners to select")
-    min_stake_threshold: int = Field(default=100, description="Minimum stake required (in TAO)")
+    NOTE: Operational parameters (miner selection, challenge timing, scoring,
+    weight setting) are hard-coded in validator/internal_config.py for network
+    consistency. This config only contains deployment-specific settings.
+    """
     
-    # Challenge parameters (in seconds for environment variables)
-    # Testnet: 10 seconds
-    # Mainnet: 300 seconds
-    challenge_interval_seconds: int = Field(default=10, description="Time between challenges (seconds)")
-
-    challenge_timeout_seconds: int = Field(default=120, description="Timeout for challenge responses (seconds)")
-    evaluation_timeout_seconds: int = Field(default=300, description="Evaluation timeout (seconds)")
+    # NOTE: Miner selection parameters (MIN_MINERS, MAX_MINERS, MIN_STAKE_THRESHOLD)
+    # are now hard-coded in validator/internal_config.py for network consistency.
     
-    # Convert to timedelta objects
-    @property
-    def challenge_interval(self) -> timedelta:
-        return timedelta(seconds=self.challenge_interval_seconds)
+    # NOTE: Challenge parameters (CHALLENGE_INTERVAL_SECONDS, CHALLENGE_TIMEOUT_SECONDS,
+    # EVALUATION_TIMEOUT_SECONDS) are now hard-coded in validator/internal_config.py.
     
-    @property
-    def challenge_timeout(self) -> timedelta:
-        return timedelta(seconds=self.challenge_timeout_seconds)
+    # NOTE: Scoring parameters (SCORE_THRESHOLD) are now hard-coded in validator/internal_config.py.
     
-    @property
-    def evaluation_timeout(self) -> timedelta:
-        return timedelta(seconds=self.evaluation_timeout_seconds)
+    # NOTE: Weights update interval (WEIGHTS_INTERVAL_SECONDS) is now hard-coded
+    # in validator/internal_config.py for network consistency.
     
-    # Scoring parameters
-    score_threshold: float = Field(
-        default=0.7, 
-        description="Minimum score required for valid responses",
-        ge=0.0,
-        le=1.0
-    )
-    
-    # Weights update interval (in seconds)
-    weights_interval_seconds: int = Field(default=1800, description="Weights update interval (seconds)")
-    
-    @property
-    def weights_interval(self) -> timedelta:
-        return timedelta(seconds=self.weights_interval_seconds)
-    
-    # Metagraph refresh interval (in seconds) - how often to refresh node list from chain
-    metagraph_refresh_interval_seconds: int = Field(
-        default=300, 
-        description="Metagraph refresh interval (seconds) - how often to fetch new node registrations from chain"
-    )
+    # NOTE: Metagraph refresh interval (METAGRAPH_REFRESH_INTERVAL_SECONDS) is now
+    # hard-coded in validator/internal_config.py for network consistency.
     
     # Test mode configuration
     test_mode: bool = Field(

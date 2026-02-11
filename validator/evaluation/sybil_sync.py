@@ -14,6 +14,7 @@ from loguru import logger
 from validator.db.operations import DatabaseManager
 from validator.db.schema import SybilDetectionResult
 from validator.config import get_validator_config
+from validator.network.challenge_api_auth import merge_auth_headers
 
 
 class SybilSyncTask:
@@ -151,11 +152,6 @@ class SybilSyncTask:
         api_key = self.config.challenge_api_key
         endpoint = f"{challenge_api_url.rstrip('/')}/analytics/sybil-detection/bulk"
         
-        headers = {
-            "X-API-Key": api_key,
-            "Content-Type": "application/json"
-        }
-        
         try:
             # Convert all records to API format
             records_data = []
@@ -175,10 +171,16 @@ class SybilSyncTask:
             
             # Send bulk request
             bulk_request = {"records": records_data}
+            body_bytes = json.dumps(bulk_request).encode()
+            headers = merge_auth_headers(
+                {"Content-Type": "application/json"},
+                body=body_bytes,
+                api_key=api_key,
+            )
             response = await self._http_client.post(
                 endpoint,
-                json=bulk_request,
-                headers=headers
+                content=body_bytes,
+                headers=headers,
             )
             
             if response.status_code == 201:

@@ -86,14 +86,16 @@ def load_config(type='validator'):
     else:
         raise ValueError(f"Invalid configuration type: {type}")
     
+    from validator.internal_config import INTERNAL_CONFIG
+    
     bt.logging.info(f"Starting validator with configuration:")
     bt.logging.info(f"Network: {config.subtensor_network}")
     bt.logging.info(f"Chain Endpoint: {config.subtensor_address}")
     bt.logging.info(f"Subnet: {config.netuid}")
     bt.logging.info(f"Wallet: {config.wallet_name}")
     bt.logging.info(f"Hotkey: {config.hotkey_name}")
-    bt.logging.info(f"Challenge Interval: {config.challenge_interval}")
-    bt.logging.info(f"Challenge Timeout: {config.challenge_timeout}")
+    bt.logging.info(f"Challenge Interval: {INTERNAL_CONFIG.challenge_interval} (internal)")
+    bt.logging.info(f"Challenge Timeout: {INTERNAL_CONFIG.challenge_timeout} (internal)")
     bt.logging.info(f"Challenge API URL: {config.challenge_api_url}")
     bt.logging.info(f"Challenge API Key: {config.challenge_api_key}")
 
@@ -118,6 +120,8 @@ class Validator:
 
     def _log_status_json(self, status: str, extra: dict | None = None) -> None:
         """Log status in JSON format and optionally save to database."""
+        from validator.internal_config import INTERNAL_CONFIG
+        
         status_data = {
             "timestamp": datetime.utcnow().isoformat(),
             "status": status,
@@ -129,11 +133,11 @@ class Validator:
                 "hotkey": self.config.hotkey_name,
             },
             "config": {
-                "challenge_interval_seconds": self.config.challenge_interval_seconds,
-                "challenge_timeout_seconds": self.config.challenge_timeout_seconds,
+                "challenge_interval_seconds": INTERNAL_CONFIG.CHALLENGE_INTERVAL_SECONDS,
+                "challenge_timeout_seconds": INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS,
                 "challenge_api_url": self.config.challenge_api_url,
-                "min_miners": self.config.min_miners,
-                "max_miners": self.config.max_miners,
+                "min_miners": INTERNAL_CONFIG.MIN_MINERS,
+                "max_miners": INTERNAL_CONFIG.MAX_MINERS,
             },
         }
         if extra:
