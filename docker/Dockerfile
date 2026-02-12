@@ -43,8 +43,8 @@ RUN apt-get update && apt-get install -y \
 # Install uv
 RUN pip3 install uv --break-system-packages
 
-# Copy dependency files
-COPY pyproject.toml setup.py ./
+# Copy dependency and lock files (lock file enables --frozen for faster, deterministic installs)
+COPY pyproject.toml setup.py uv.lock ./
 
 # Create wallet directory (wallets will be mounted at runtime via volumes)
 RUN mkdir -p /root/.bittensor/wallets/validator
@@ -60,15 +60,21 @@ RUN uv venv $VENV_NAME
 ENV UV_PROJECT_ENVIRONMENT=$VENV_NAME
 
 # Sync base dependencies with uv
-RUN uv sync
+# --mount=type=cache persists the uv download cache across builds so CUDA/PyTorch
+# wheels (~GB) are only downloaded once, even when the layer cache is invalidated.
+# --frozen uses the lock file as-is without re-resolving dependencies.
+RUN --mount=type=cache,id=loosh-uv-cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 # Install Fiber (MLTS networking library) from git repository into the venv
 # Install AFTER uv sync to ensure it's in the venv and not overwritten
 # Using chutesai/fiber for MLTS (Multi-Layer Transport Security) support
-RUN uv pip install -p $VENV_NAME "git+https://github.com/chutesai/fiber.git@a41ab890708757140a3cf4aae8e5af57a8b03159#egg=fiber[full]"
+RUN --mount=type=cache,id=loosh-uv-cache,target=/root/.cache/uv \
+    uv pip install -p $VENV_NAME "git+https://github.com/chutesai/fiber.git@a41ab890708757140a3cf4aae8e5af57a8b03159#egg=fiber[full]"
 
 # Install btcli (Bittensor CLI) for wallet management
-RUN uv pip install -p $VENV_NAME --system bittensor && \
+RUN --mount=type=cache,id=loosh-uv-cache,target=/root/.cache/uv \
+    uv pip install -p $VENV_NAME --system bittensor && \
     ln -sf $VENV_NAME/bin/btcli /usr/local/bin/btcli || \
     (echo '#!/bin/bash' > /usr/local/bin/btcli && \
      echo "uv run btcli \"\$@\"" >> /usr/local/bin/btcli && \

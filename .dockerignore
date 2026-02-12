@@ -23,7 +23,7 @@ env/
 
 # UV cache
 .uv-cache/
-uv.lock
+# Note: uv.lock is NOT ignored - needed for reproducible builds with --frozen
 
 # Git
 .git/

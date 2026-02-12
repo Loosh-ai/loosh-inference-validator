@@ -120,7 +120,8 @@ class InternalConfig:
     
     # Enable narrative generation using LLM after consensus evaluation
     # When disabled, evaluation and heatmap generation still run, but narrative is skipped.
-    ENABLE_NARRATIVE_GENERATION: bool = True
+    # Not recommended for production - requires langchain-openai and an LLM API endpoint.
+    ENABLE_NARRATIVE_GENERATION: bool = False
     
     # Enable heatmap generation
     # Hardcoded to False to reduce processing overhead and upload failures
