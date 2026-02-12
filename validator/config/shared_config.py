@@ -80,7 +80,7 @@ class ValidatorSpecificConfig(BaseConfig):
     consistency. This config only contains deployment-specific settings.
     """
     
-    # NOTE: Miner selection parameters (MIN_MINERS, MAX_MINERS, MIN_STAKE_THRESHOLD)
+    # NOTE: Miner selection parameters (MIN_MINERS, MAX_MINERS, MAX_MINER_STAKE)
     # are now hard-coded in validator/internal_config.py for network consistency.
     
     # NOTE: Challenge parameters (CHALLENGE_INTERVAL_SECONDS, CHALLENGE_TIMEOUT_SECONDS,

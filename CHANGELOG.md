@@ -5,6 +5,14 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-02-12
+
+### Fixed
+
+- **Fiber MLTS inline re-negotiation with miners** — Validator now handles `401` and `400` responses from miners as key-expired signals, clears stale symmetric key cache, and re-handshakes immediately. Supports inline re-negotiation when the miner provides its RSA public key in the response body.
+- **Fair miner selection across challenges** — Miner sampling is now per-challenge instead of per-availability-window. Previously, the availability worker pre-sampled `MAX_MINERS` from the available pool, and those same miners served all challenges for the next 30-second window. Now the full pool of available miners is returned and `main.py` randomly selects `MAX_MINERS` per challenge, giving every available miner a fair chance.
+- **Removed misleading `MIN_STAKE_THRESHOLD`** — The constant was defined but never enforced in miner selection. Removed to avoid confusion. There is no minimum stake for miners.
+
 ## [1.2.0] - 2026-02-11
 
 ### Added

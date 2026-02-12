@@ -61,19 +61,49 @@ class MinerFiberClient:
             logger.error(f"Failed to load Validator hotkey for MinerFiberClient: {e}")
             self.validator_hotkey = None
     
-    async def _perform_handshake(self, miner_endpoint: str, client: httpx.AsyncClient) -> bool:
-        """Perform handshake with miner."""
+    async def _perform_handshake(
+        self,
+        miner_endpoint: str,
+        client: httpx.AsyncClient,
+        miner_public_key_pem: Optional[str] = None,
+    ) -> bool:
+        """
+        Perform Fiber MLTS handshake with miner.
+
+        Args:
+            miner_endpoint: Miner's HTTP endpoint.
+            client: httpx async client.
+            miner_public_key_pem: Optional RSA public key PEM string.
+                If provided, skips the GET /fiber/public-key round-trip
+                (inline re-negotiation from a 401 response).
+
+        Returns:
+            True if handshake succeeded, False otherwise.
+        """
         if not self.validator_hotkey:
             logger.error("Validator hotkey not loaded, cannot perform handshake.")
             return False
         
         try:
-            # 1. Fetch miner public key
-            public_key_url = f"{miner_endpoint}/fiber/public-key"
-            response = await client.get(public_key_url, timeout=self.handshake_timeout_seconds)
-            response.raise_for_status()
-            miner_public_key_pem = response.json()["public_key"]
-            miner_public_key = serialization.load_pem_public_key(miner_public_key_pem.encode('utf-8'))
+            # 1. Obtain miner's RSA public key
+            if miner_public_key_pem:
+                # Inline re-negotiation — key provided by the miner's 401 response
+                logger.info(
+                    f"Inline re-handshake with {miner_endpoint} "
+                    f"(public key provided in rejection response)"
+                )
+                miner_public_key = serialization.load_pem_public_key(
+                    miner_public_key_pem.encode("utf-8")
+                )
+            else:
+                # Standard handshake — fetch the key
+                public_key_url = f"{miner_endpoint}/fiber/public-key"
+                response = await client.get(public_key_url, timeout=self.handshake_timeout_seconds)
+                response.raise_for_status()
+                miner_public_key_pem = response.json()["public_key"]
+                miner_public_key = serialization.load_pem_public_key(
+                    miner_public_key_pem.encode("utf-8")
+                )
             
             # 2. Generate symmetric key and UUID
             symmetric_key = Fernet.generate_key()
@@ -203,19 +233,45 @@ class MinerFiberClient:
             
             response = await client.post(challenge_url, content=encrypted_payload, headers=headers, timeout=5*60.0)
             
-            # Handle 401 (key invalid on miner side) with retry
-            if response.status_code == 401:
-                logger.warning(f"Miner {miner_endpoint} rejected key (401) - clearing cache and retrying handshake")
+            # Handle key rejection — 401 from updated miners, 400 from legacy miners.
+            # Updated miners include their RSA public key in the 401 body so we
+            # can re-handshake in a single round-trip (inline re-negotiation).
+            if response.status_code in (401, 400):
+                logger.warning(
+                    f"Miner {miner_endpoint} rejected key ({response.status_code}) "
+                    f"— clearing cache and attempting re-handshake"
+                )
                 if miner_endpoint in self._symmetric_key_cache:
                     del self._symmetric_key_cache[miner_endpoint]
-                if await self._perform_handshake(miner_endpoint, client):
+                
+                # Check if the response includes the miner's public key
+                # for inline re-negotiation (saves one round-trip).
+                inline_public_key: Optional[str] = None
+                try:
+                    body = response.json()
+                    if body.get("requires_handshake") and body.get("public_key"):
+                        inline_public_key = body["public_key"]
+                except Exception:
+                    pass
+                
+                handshake_ok = await self._perform_handshake(
+                    miner_endpoint, client, miner_public_key_pem=inline_public_key
+                )
+                
+                if handshake_ok:
                     # Retry once with fresh key
                     fernet_instance, symmetric_key_uuid, _ = self._symmetric_key_cache[miner_endpoint]
                     encrypted_payload = fernet_instance.encrypt(json_payload)
                     headers["x-fiber-symmetric-key-uuid"] = symmetric_key_uuid
-                    response = await client.post(challenge_url, content=encrypted_payload, headers=headers, timeout=5*60.0)
+                    response = await client.post(
+                        challenge_url, content=encrypted_payload,
+                        headers=headers, timeout=5 * 60.0,
+                    )
                 else:
-                    logger.error(f"Failed to re-establish handshake with miner {miner_endpoint} after 401")
+                    logger.error(
+                        f"Failed to re-establish handshake with miner "
+                        f"{miner_endpoint} after {response.status_code}"
+                    )
                     return None
             
             response.raise_for_status()
@@ -238,7 +294,7 @@ class MinerFiberClient:
         except InvalidToken:
             logger.error(f"Symmetric key expired or invalid for miner {miner_endpoint}. Retrying handshake.")
             # Invalidate cache and retry handshake once
-            del self._symmetric_key_cache[miner_endpoint]
+            self._symmetric_key_cache.pop(miner_endpoint, None)
             if await self._perform_handshake(miner_endpoint, client):
                 return await self.send_encrypted_challenge(miner_endpoint, challenge_data, client)
             return None

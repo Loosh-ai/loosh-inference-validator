@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loosh-inference-validator"
-version = "1.2.0"
+version = "1.2.1"
 authors = [
     { name = "Loosh Team", email = "team@loosh.ai" },
 ]
@@ -81,7 +81,6 @@ select = ["E", "F", "B", "I"]
 ignore = [] 
 
 [tool.uv]
-cache-dir = ".uv-cache"
 link-mode = "copy"
 
 # Override Fiber's pinned async-substrate-interface==1.1.1 to allow bittensor SDK compatibility

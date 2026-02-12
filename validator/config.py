@@ -53,7 +53,7 @@ class ValidatorConfig(BaseSettings):
 
     wallet: WalletConfig = Field(default_factory=WalletConfig)
     
-    # NOTE: Miner selection parameters (MIN_MINERS, MAX_MINERS, MIN_STAKE_THRESHOLD, MAX_MINER_STAKE)
+    # NOTE: Miner selection parameters (MIN_MINERS, MAX_MINERS, MAX_MINER_STAKE)
     # are now hard-coded in validator/internal_config.py for network consistency.
     
     # NOTE: Challenge parameters (CHALLENGE_INTERVAL_SECONDS, CHALLENGE_TIMEOUT_SECONDS,

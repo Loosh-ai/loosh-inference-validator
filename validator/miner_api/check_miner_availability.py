@@ -257,7 +257,10 @@ async def get_available_nodes(
     max_miners: int = _INTERNAL_MAX_MINERS
 ) -> List[Node]:
     """
-    Check availability of all nodes and return available ones up to max_miners.
+    Check availability of all nodes and return ALL available ones.
+    
+    Random sampling for challenge dispatch is done per-challenge in main.py
+    so every miner gets a fair chance across rounds.
     
     Uses a semaphore to limit concurrent checks and prevent connection pool exhaustion.
     
@@ -267,7 +270,8 @@ async def get_available_nodes(
         db_manager: Database manager
         hotkey: Validator hotkey
         max_concurrent: Maximum concurrent checks
-        max_miners: Maximum number of miners to select
+        max_miners: (unused, kept for API compat) per-challenge sampling
+                    now lives in main.py process_challenge
     """
     if not nodes:
         logger.info("No nodes to check for availability")
@@ -308,17 +312,9 @@ async def get_available_nodes(
     total_available = len(available_nodes)
     logger.info(f"Found {total_available} available nodes out of {len(nodes)} total nodes")
     
-    # If we have more available nodes than max_miners, randomly select max_miners
-    selected_nodes = available_nodes
-    if total_available > max_miners:
-        # Randomly select max_miners nodes from the available nodes
-        logger.info(f"Randomly selecting {max_miners} nodes from {total_available} available nodes")
-        selected_nodes = random.sample(available_nodes, max_miners)
-    else:
-        logger.info(f"Using all {total_available} available nodes (less than max_miners={max_miners})")
+    # Return ALL available nodes — per-challenge random sampling is
+    # handled in main.py so that every miner gets a fair shot.
+    for node in available_nodes:
+        logger.debug(f"Available node {node.node_id} (hotkey: {node.hotkey})")
     
-    # Log selected nodes
-    for node in selected_nodes:
-        logger.info(f"Selected node {node.node_id} (hotkey: {node.hotkey})")
-    
-    return selected_nodes
+    return available_nodes
