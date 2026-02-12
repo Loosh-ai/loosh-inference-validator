@@ -282,15 +282,20 @@ async def check_nodes_async(
     """
     Check availability of all nodes asynchronously.
     
+    Returns ALL available nodes — random sampling for challenge dispatch
+    is done per-challenge in the main loop so every miner gets a fair
+    chance across rounds.
+    
     Args:
         nodes: List of nodes to check
         hotkey: Validator hotkey
         max_concurrent: Maximum concurrent checks
         db_path: Path to database file
-        max_miners: Maximum number of miners to select
+        max_miners: (unused, kept for API compat) per-challenge sampling
+                    now lives in main.py process_challenge
     
     Returns:
-        List of available nodes
+        List of ALL available nodes
     """
     if not nodes:
         return []
@@ -331,15 +336,11 @@ async def check_nodes_async(
         total_available = len(available_nodes)
         logger.info(f"Worker: Found {total_available} available nodes out of {len(nodes)} total nodes")
         
-        # Select up to max_miners nodes
-        if total_available > max_miners:
-            selected_nodes = random.sample(available_nodes, max_miners)
-            logger.info(f"Worker: Randomly selected {max_miners} nodes from {total_available} available")
-        else:
-            selected_nodes = available_nodes
-            logger.info(f"Worker: Using all {total_available} available nodes (less than max_miners={max_miners})")
-        
-        return selected_nodes
+        # Return ALL available nodes — per-challenge random sampling
+        # is handled in main.py so that every miner gets a fair shot
+        # across challenge rounds instead of the same N miners
+        # monopolising an entire 30-second window.
+        return available_nodes
 
 
 def worker_process(

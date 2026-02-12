@@ -607,10 +607,28 @@ async def main_loop():
                                 f"from {len(current_available_nodes) if current_available_nodes else 0} available nodes"
                             )
                         
-                        # Create new challenge tasks for available nodes
+                        # Per-challenge random sampling: pick up to MAX_MINERS
+                        # from the full available pool so every miner gets a fair
+                        # chance across challenge rounds.
+                        max_miners_per_challenge = INTERNAL_CONFIG.MAX_MINERS
+                        if len(filtered_nodes) > max_miners_per_challenge:
+                            selected_miners = random.sample(filtered_nodes, max_miners_per_challenge)
+                            logger.info(
+                                f"Challenge {challenge_id[:8]}...: randomly selected "
+                                f"{max_miners_per_challenge} miners from {len(filtered_nodes)} available"
+                            )
+                        else:
+                            selected_miners = filtered_nodes
+                            logger.info(
+                                f"Challenge {challenge_id[:8]}...: using all "
+                                f"{len(filtered_nodes)} available miners "
+                                f"(≤ max_miners={max_miners_per_challenge})"
+                            )
+                        
+                        # Create new challenge tasks for selected nodes
                         new_challenge_tasks = []
                         
-                        for node in filtered_nodes:
+                        for node in selected_miners:
                             # Convert IP from integer to dotted decimal if needed
                             import socket
                             ip_str = node.ip

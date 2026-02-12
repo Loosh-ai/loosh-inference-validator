@@ -33,15 +33,16 @@ class InternalConfig:
     # Minimum number of miners required for a valid challenge round
     MIN_MINERS: int = 3
     
-    # Maximum number of miners to query per challenge
+    # Maximum number of miners to select per challenge round.
+    # Each challenge randomly samples this many from ALL available miners,
+    # ensuring fair rotation across the full pool.
     MAX_MINERS: int = 10
     
-    # Minimum stake required for a miner to be eligible (in TAO)
-    # Miners below this threshold are excluded from challenges
-    MIN_STAKE_THRESHOLD: int = 100
-    
-    # Maximum stake for a node to be considered a miner (not a validator)
-    # Nodes with stake >= this are treated as validators and excluded from challenges
+    # Maximum stake for a node to be considered a miner (not a validator).
+    # Nodes with stake >= this are treated as validators and excluded
+    # from challenges when the validator list fetcher is unavailable.
+    # NOTE: There is intentionally NO minimum stake for miners — all
+    # registered miners with a valid IP/port are eligible for challenges.
     MAX_MINER_STAKE: int = 999
     
     # =========================================================================
@@ -415,7 +416,6 @@ INTERNAL_CONFIG = InternalConfig()
 # These can be imported directly: from validator.internal_config import WEIGHTS_INTERVAL_SECONDS
 MIN_MINERS = INTERNAL_CONFIG.MIN_MINERS
 MAX_MINERS = INTERNAL_CONFIG.MAX_MINERS
-MIN_STAKE_THRESHOLD = INTERNAL_CONFIG.MIN_STAKE_THRESHOLD
 MAX_MINER_STAKE = INTERNAL_CONFIG.MAX_MINER_STAKE
 CHALLENGE_INTERVAL_SECONDS = INTERNAL_CONFIG.CHALLENGE_INTERVAL_SECONDS
 CHALLENGE_TIMEOUT_SECONDS = INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS
