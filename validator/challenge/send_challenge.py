@@ -119,10 +119,10 @@ async def send_inference_challenge(
             f"response: {response_preview}"
         )
         
-        # Log response in database
+        # Log response in database (FK resolved via hotkey lookup internally)
         db_manager.log_inference_response(
             challenge_id=challenge_id,
-            miner_id=node_id,
+            miner_hotkey=miner_hotkey,
             response=inference_response
         )
         

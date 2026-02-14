@@ -2,12 +2,14 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy import create_engine, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker, Session
 from loguru import logger
 
 from validator.db.schema import (
     Base, Miner, InferenceChallenge, InferenceResponse,
-    EvaluationResult, MinerScore, SybilDetectionResult
+    EvaluationResult, MinerScore, SybilDetectionResult,
+    migrate_db,
 )
 from validator.challenge.challenge_types import InferenceResponse as ChallengeResponse
 
@@ -17,6 +19,7 @@ class DatabaseManager:
     def __init__(self, db_path: str):
         """Initialize database connection."""
         self.engine = create_engine(f"sqlite:///{db_path}")
+        migrate_db(self.engine)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
     
@@ -40,74 +43,122 @@ class DatabaseManager:
         UID COMPRESSION SAFETY: Looks up miners by HOTKEY (persistent SS58 address),
         not by node_id (UID). UIDs are transient indices that change on UID compression.
         node_id is stored as an informational snapshot and updated each observation.
+        
+        If a different miner already holds this node_id (stale UID after compression),
+        the old miner's node_id is cleared before assigning it to the new miner.
+        
+        Handles concurrent-insert races via IntegrityError retry.
         """
-        with self.get_session() as session:
-            # Look up by HOTKEY (persistent identity), not node_id (UID)
-            miner = session.query(Miner).filter_by(hotkey=hotkey).first()
-            
-            if miner:
-                # Update existing miner — including node_id which may change on UID compression
-                miner.node_id = node_id  # Informational snapshot, updated each observation
-                miner.ip = ip
-                miner.port = port
-                miner.stake = stake
-                miner.last_updated = datetime.utcnow()
-                
-                # Update new fields if provided
-                miner.is_available = 1 if is_available else 0
-                if last_success is not None:
-                    miner.last_success = last_success
-                if error is not None:
-                    miner.error = error
-            else:
-                # Create new miner
-                miner = Miner(
-                    node_id=node_id,
-                    hotkey=hotkey,
-                    ip=ip,
-                    port=port,
-                    stake=stake,
-                    is_available=1 if is_available else 0,
-                    last_success=last_success,
-                    error=error,
-                    last_updated=datetime.utcnow()
-                )
-                session.add(miner)
-            
-            session.commit()
-    
-    def create_challenge(
+        self._log_miner_inner(node_id, hotkey, ip, port, stake, is_available, last_success, error, _retry=True)
+
+    def _log_miner_inner(
         self,
-        prompt: str,
-        model: str,
-        max_tokens: int,
-        temperature: float,
-        top_p: float
-    ) -> InferenceChallenge:
-        """Create a new inference challenge."""
+        node_id: int,
+        hotkey: str,
+        ip: str,
+        port: int,
+        stake: float,
+        is_available: bool,
+        last_success: Optional[datetime],
+        error: Optional[str],
+        _retry: bool = True,
+    ) -> None:
+        """Internal implementation of log_miner with retry logic."""
         with self.get_session() as session:
-            challenge = InferenceChallenge(
-                prompt=prompt,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p
-            )
-            session.add(challenge)
-            session.commit()
-            return challenge
+            try:
+                # Look up by HOTKEY (persistent identity), not node_id (UID)
+                miner = session.query(Miner).filter_by(hotkey=hotkey).first()
+                
+                if miner:
+                    # Update existing miner — including node_id which may change on UID compression
+                    miner.node_id = node_id  # Informational snapshot, updated each observation
+                    miner.ip = ip
+                    miner.port = port
+                    miner.stake = stake
+                    miner.last_updated = datetime.utcnow()
+                    
+                    # Update new fields if provided
+                    miner.is_available = 1 if is_available else 0
+                    if last_success is not None:
+                        miner.last_success = last_success
+                    if error is not None:
+                        miner.error = error
+                else:
+                    # Clear stale node_id from any other miner that may hold it
+                    # (UID compression can reassign a UID to a different hotkey)
+                    stale = session.query(Miner).filter(
+                        Miner.node_id == node_id,
+                        Miner.hotkey != hotkey,
+                    ).first()
+                    if stale:
+                        logger.info(
+                            f"Clearing stale node_id {node_id} from miner "
+                            f"{stale.hotkey[:16]}… (reassigned to {hotkey[:16]}…)"
+                        )
+                        stale.node_id = None
+                    
+                    # Create new miner
+                    miner = Miner(
+                        node_id=node_id,
+                        hotkey=hotkey,
+                        ip=ip,
+                        port=port,
+                        stake=stake,
+                        is_available=1 if is_available else 0,
+                        last_success=last_success,
+                        error=error,
+                        last_updated=datetime.utcnow(),
+                    )
+                    session.add(miner)
+                
+                session.commit()
+                
+            except IntegrityError:
+                session.rollback()
+                if _retry:
+                    logger.warning(
+                        f"IntegrityError logging miner {hotkey[:16]}… (node_id={node_id}), retrying"
+                    )
+                    self._log_miner_inner(
+                        node_id, hotkey, ip, port, stake,
+                        is_available, last_success, error, _retry=False,
+                    )
+                else:
+                    logger.error(
+                        f"IntegrityError persists for miner {hotkey[:16]}… "
+                        f"(node_id={node_id}) after retry — skipping",
+                        exc_info=True,
+                    )
     
     def log_inference_response(
         self,
         challenge_id: int,
-        miner_id: int,
+        miner_hotkey: str,
         response: ChallengeResponse
     ) -> None:
-        """Log an inference response from a miner."""
+        """Log an inference response from a miner.
+        
+        UID COMPRESSION SAFETY: Resolves miner_id FK via hotkey lookup rather
+        than accepting a chain UID directly.  The InferenceResponse.miner_id FK
+        references miners.id (autoincrement PK), NOT the chain UID.
+        
+        Args:
+            challenge_id: Challenge ID (hash of UUID from Challenge API)
+            miner_hotkey: Miner's SS58 hotkey — used to look up miners.id
+            response: The inference response payload
+        """
         with self.get_session() as session:
+            miner = session.query(Miner).filter_by(hotkey=miner_hotkey).first()
+            if miner is None:
+                logger.warning(
+                    f"Cannot log inference response — miner {miner_hotkey[:16]}… "
+                    f"not found in DB (challenge {challenge_id})"
+                )
+                return
+            
             db_response = InferenceResponse(
                 challenge_id=challenge_id,
-                miner_id=miner_id,
+                miner_id=miner.id,
                 response_text=response.response_text,
                 response_time_ms=response.response_time_ms
             )
@@ -141,35 +192,6 @@ class DatabaseManager:
             )
             
             session.commit()
-    
-    def update_miner_score(self, miner_id: int, score: float) -> None:
-        """Update a miner's score."""
-        with self.get_session() as session:
-            miner_score = MinerScore(
-                miner_id=miner_id,
-                score=score
-            )
-            session.add(miner_score)
-            session.commit()
-    
-    def get_miner_scores(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get recent miner scores."""
-        with self.get_session() as session:
-            scores = (
-                session.query(MinerScore)
-                .order_by(MinerScore.created_at.desc())
-                .limit(limit)
-                .all()
-            )
-            
-            return [
-                {
-                    "miner_id": score.miner_id,
-                    "score": score.score,
-                    "created_at": score.created_at
-                }
-                for score in scores
-            ]
     
     def log_sybil_detection_result(
         self,

@@ -1,11 +1,13 @@
 from datetime import datetime
 from typing import Optional
+import sqlite3
 
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, ForeignKey,
-    create_engine, Table, MetaData, Text, JSON
+    create_engine, Table, MetaData, Text, JSON, text, inspect
 )
 from sqlalchemy.orm import declarative_base, relationship
+from loguru import logger
 
 Base = declarative_base()
 
@@ -100,7 +102,105 @@ class SybilDetectionResult(Base):
     
     challenge = relationship("InferenceChallenge")
 
+def _has_unique_constraint_on_node_id(engine) -> bool:
+    """Check if the miners table has a UNIQUE constraint on node_id.
+    
+    Inspects the SQLite index list to detect stale UNIQUE constraints
+    that were removed from the SQLAlchemy model but persist in the
+    live database (create_all never drops constraints).
+    """
+    with engine.connect() as conn:
+        # Check if miners table exists
+        result = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='miners'")
+        )
+        if not result.fetchone():
+            return False
+        
+        # Inspect indexes on the miners table
+        indexes = conn.execute(text("PRAGMA index_list('miners')")).fetchall()
+        for idx in indexes:
+            # idx format: (seq, name, unique, origin, partial)
+            idx_name = idx[1]
+            is_unique = idx[2]
+            if is_unique:
+                # Check which columns this unique index covers
+                cols = conn.execute(
+                    text(f"PRAGMA index_info('{idx_name}')")
+                ).fetchall()
+                col_names = [col[2] for col in cols]  # col format: (seqno, cid, name)
+                if col_names == ["node_id"]:
+                    return True
+    return False
+
+
+def _migrate_miners_drop_node_id_unique(engine) -> None:
+    """Remove stale UNIQUE constraint on miners.node_id.
+    
+    SQLite does not support ALTER TABLE DROP CONSTRAINT, so we must
+    recreate the table. This preserves all data and foreign key
+    references (FKs reference miners.id which is preserved).
+    
+    This migration is idempotent — it only runs when the stale
+    constraint is detected.
+    """
+    logger.info("Migrating miners table: removing UNIQUE constraint from node_id")
+    
+    with engine.begin() as conn:
+        # Disable FK enforcement during migration to avoid cascading issues
+        conn.execute(text("PRAGMA foreign_keys = OFF"))
+        
+        # 1. Create new table with correct schema (no UNIQUE on node_id)
+        conn.execute(text("""
+            CREATE TABLE miners_new (
+                id INTEGER PRIMARY KEY,
+                hotkey VARCHAR NOT NULL UNIQUE,
+                node_id INTEGER,
+                ip VARCHAR NOT NULL,
+                port INTEGER NOT NULL,
+                stake FLOAT NOT NULL,
+                is_available INTEGER NOT NULL,
+                last_success DATETIME,
+                error TEXT,
+                last_updated DATETIME NOT NULL,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        """))
+        
+        # 2. Copy all data — on collision (duplicate node_id), keep the
+        #    most recently updated row per hotkey (hotkey is the real PK)
+        conn.execute(text("""
+            INSERT INTO miners_new
+                (id, hotkey, node_id, ip, port, stake, is_available,
+                 last_success, error, last_updated, created_at, updated_at)
+            SELECT id, hotkey, node_id, ip, port, stake, is_available,
+                   last_success, error, last_updated, created_at, updated_at
+            FROM miners
+        """))
+        
+        # 3. Drop old table and rename
+        conn.execute(text("DROP TABLE miners"))
+        conn.execute(text("ALTER TABLE miners_new RENAME TO miners"))
+        
+        # 4. Re-enable FK enforcement
+        conn.execute(text("PRAGMA foreign_keys = ON"))
+    
+    logger.info("Migration complete: miners.node_id UNIQUE constraint removed")
+
+
+def migrate_db(engine) -> None:
+    """Run all pending schema migrations.
+    
+    Called during DatabaseManager initialization and init_db.
+    Each migration is idempotent and self-detecting.
+    """
+    if _has_unique_constraint_on_node_id(engine):
+        _migrate_miners_drop_node_id_unique(engine)
+
+
 def init_db(db_path: str) -> None:
     """Initialize the database with the schema."""
     engine = create_engine(f"sqlite:///{db_path}")
-    Base.metadata.create_all(engine) 
+    migrate_db(engine)
+    Base.metadata.create_all(engine)
