@@ -197,6 +197,8 @@ def migrate_db(engine) -> None:
     """
     if _has_unique_constraint_on_node_id(engine):
         _migrate_miners_drop_node_id_unique(engine)
+    else:
+        logger.debug("migrate_db: no pending migrations")
 
 
 def init_db(db_path: str) -> None:

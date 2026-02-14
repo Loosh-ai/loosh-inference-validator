@@ -276,7 +276,7 @@ async def check_nodes_async(
     nodes: List[Node],
     hotkey: str,
     max_concurrent: int,
-    db_path: str,
+    db_manager: DatabaseManager,
     max_miners: int = 3
 ) -> List[Node]:
     """
@@ -290,7 +290,7 @@ async def check_nodes_async(
         nodes: List of nodes to check
         hotkey: Validator hotkey
         max_concurrent: Maximum concurrent checks
-        db_path: Path to database file
+        db_manager: Database manager instance (reused across cycles)
         max_miners: (unused, kept for API compat) per-challenge sampling
                     now lives in main.py process_challenge
     
@@ -301,9 +301,6 @@ async def check_nodes_async(
         return []
     
     logger.info(f"Worker: Checking availability for {len(nodes)} nodes (max {max_concurrent} concurrent)")
-    
-    # Initialize database manager in this process
-    db_manager = DatabaseManager(db_path)
     
     # Create HTTP client
     pool_size = max(100, max_concurrent * 2)
@@ -366,6 +363,10 @@ def worker_process(
     """
     logger.info(f"Worker process started (PID: {os.getpid()})")
     
+    # Create DatabaseManager once for the worker's lifetime — avoids
+    # running migrate_db on every 30-second availability cycle.
+    db_manager = DatabaseManager(db_path)
+    
     current_nodes: List[Node] = []
     last_check_time = 0
     
@@ -387,7 +388,7 @@ def worker_process(
                 
                 # Run async check
                 available_nodes = asyncio.run(
-                    check_nodes_async(current_nodes, hotkey, max_concurrent, db_path, max_miners)
+                    check_nodes_async(current_nodes, hotkey, max_concurrent, db_manager, max_miners)
                 )
                 
                 # Send results back
