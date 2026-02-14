@@ -348,9 +348,9 @@ class InferenceValidator:
             responses: List of inference responses
             miner_ids: Optional list of miner UIDs corresponding to each response
                        (used internally for ConsensusEngine labels; NOT for persistent identification)
-            miner_hotkeys: Optional list of miner hotkeys (SS58 addresses) corresponding to each response.
-                           Used as the primary persistent identifier for emissions dict keys and sybil detection.
-                           If not provided, falls back to str(miner_id) for backward compatibility.
+            miner_hotkeys: List of miner hotkeys (SS58 addresses) corresponding to each response.
+                           REQUIRED — used as the persistent identifier for emissions dict keys
+                           and sybil detection. Must match responses length.
             correlation_id: Optional correlation ID for tracking
             validator_hotkey: Optional validator hotkey SS58 for Fiber encryption
         
@@ -359,12 +359,21 @@ class InferenceValidator:
             - Consensus score
             - Path to heatmap image
             - Narrative of consensus
-            - Emissions allocation (keyed by miner hotkey when miner_hotkeys provided, else str(miner_id))
+            - Emissions allocation keyed by miner hotkey
         """
         # Store validator_hotkey for use in _upload_heatmap
         self._validator_hotkey = validator_hotkey
         try:
             num_responses = len(responses)
+            
+            # Validate miner_hotkeys — required for UID-compression-safe emission keys
+            if not miner_hotkeys or len(miner_hotkeys) != num_responses:
+                raise ValueError(
+                    f"miner_hotkeys is required and must match responses length "
+                    f"(got {len(miner_hotkeys) if miner_hotkeys else 0} hotkeys "
+                    f"for {num_responses} responses)"
+                )
+            
             logger.info(f"[EVALUATION] Processing {num_responses} response(s) for challenge {challenge_id}")
             
             # Handle edge cases with too few responses
@@ -383,10 +392,7 @@ class InferenceValidator:
                 # Check if response indicates test mode
                 response_text = response.response_text.strip()
                 if response_text.startswith("[TEST MODE]"):
-                    # Use hotkey as primary identifier, fallback to UID string
-                    miner_key = (miner_hotkeys[i] if miner_hotkeys and i < len(miner_hotkeys)
-                                 else str(miner_ids[i]) if miner_ids and i < len(miner_ids)
-                                 else str(i))
+                    miner_key = miner_hotkeys[i]
                     test_mode_miners.append(miner_key)
                     logger.warning(
                         f"[EVALUATION] Miner {miner_key[:16]}... returned test mode response - "
@@ -431,11 +437,8 @@ class InferenceValidator:
             
             if num_valid == 1:
                 logger.info(f"[EVALUATION] Only 1 valid response received - using simple scoring (no consensus evaluation possible)")
-                # For single response, return a default score and create simple emissions
-                # Use hotkey as key when available, fallback to UID string
-                single_key = (valid_miner_hotkeys[0] if valid_miner_hotkeys
-                              else str(valid_miner_ids[0]) if valid_miner_ids
-                              else "0")
+                # For single response, return a default score — keyed by hotkey
+                single_key = valid_miner_hotkeys[0]
                 emissions = {single_key: 1.0}
                 
                 # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
@@ -679,11 +682,10 @@ class InferenceValidator:
             individual_scores = result.miner_scores if result.miner_scores else {}
             
             # Calculate emissions for valid responses
-            # NOTE: Emissions dict keys are miner HOTKEYS when miner_hotkeys are provided,
-            # for UID compression safety. Falls back to str(miner_id) if not available.
+            # Emissions dict keys are miner HOTKEYS (UID compression safe)
             emissions = self._calculate_emissions(
                 valid_responses, result, valid_miner_ids, individual_scores,
-                miner_hotkeys=valid_miner_hotkeys if valid_miner_hotkeys else None
+                miner_hotkeys=valid_miner_hotkeys
             )
             
             # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
@@ -789,13 +791,22 @@ class InferenceValidator:
             miner_ids: Optional list of miner UIDs corresponding to each response
                        (used to derive consensus labels matching ConsensusEngine)
             individual_scores: Optional dict of individual response scores (label -> score)
-            miner_hotkeys: Optional list of miner hotkeys (SS58 addresses) for emissions dict keys.
-                           If provided, emissions are keyed by hotkey (UID compression safe).
-                           If not provided, falls back to str(miner_id) for backward compatibility.
+            miner_hotkeys: List of miner hotkeys (SS58 addresses) for emissions dict keys.
+                           REQUIRED — emissions MUST be keyed by hotkey (UID compression safe).
         
         Returns:
-            Dict mapping miner identifier (hotkey preferred) to emission score.
+            Dict mapping miner hotkey (str) to emission score.
+        
+        Raises:
+            ValueError: If miner_hotkeys is not provided or length doesn't match responses.
         """
+        if not miner_hotkeys or len(miner_hotkeys) != len(responses):
+            raise ValueError(
+                f"miner_hotkeys is required and must match responses length "
+                f"(got {len(miner_hotkeys) if miner_hotkeys else 0} hotkeys for "
+                f"{len(responses)} responses)"
+            )
+        
         # Base emissions on response time and consensus score
         total_time = sum(r.response_time_ms for r in responses)
         emissions = {}
@@ -810,8 +821,7 @@ class InferenceValidator:
             # Faster responses get more emissions
             time_ratio = 1 - (response.response_time_ms / total_time)
             
-            # BUG FIX (t0-1): Use the ACTUAL label that ConsensusEngine assigns.
-            # When miner_ids are passed, ConsensusEngine labels are str(uid), not "R{i+1}".
+            # ConsensusEngine labels: str(uid) when miner_ids are passed, else "R{i+1}".
             # The label must match what's in result.in_consensus dict keys.
             if miner_ids and i < len(miner_ids):
                 response_label = str(miner_ids[i])  # Matches ConsensusEngine label format
@@ -830,17 +840,8 @@ class InferenceValidator:
             if highest_scoring_label and response_label == highest_scoring_label:
                 emission *= bonus_multiplier
             
-            # UID COMPRESSION SAFETY (t0-3): Use hotkey as dict key when available.
-            # Hotkeys are persistent SS58 addresses that survive UID compression.
-            # Falls back to str(miner_id) if hotkeys not provided.
-            if miner_hotkeys and i < len(miner_hotkeys):
-                emission_key = miner_hotkeys[i]
-            elif miner_ids and i < len(miner_ids):
-                emission_key = str(miner_ids[i])
-            else:
-                emission_key = str(i)
-            
-            emissions[emission_key] = float(emission)  # Ensure Python float for JSON serialization
+            # Emissions keyed by hotkey (persistent SS58 address, UID compression safe)
+            emissions[miner_hotkeys[i]] = float(emission)
         
         return emissions
     

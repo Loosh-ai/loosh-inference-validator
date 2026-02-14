@@ -5,6 +5,19 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-02-14
+
+### Fixed
+
+- **Database migration: removed stale UNIQUE constraint on `miners.node_id`** — SQLite retained a UNIQUE constraint from an earlier schema version. `Base.metadata.create_all()` does not alter existing tables, so the constraint persisted and caused `IntegrityError` on UID reassignment. Added auto-migration that detects and recreates the table without the constraint.
+- **`log_miner` UID compression safety** — Miners are now looked up by hotkey (persistent SS58 address), not UID. Stale UIDs are cleared before reassignment. Includes IntegrityError retry for concurrent-insert races.
+- **Broken FK in `log_inference_response`** — Was passing chain UID (`node_id`) as `miner_id`, but the FK references `miners.id` (autoincrement PK). Now accepts `miner_hotkey` and resolves the FK via hotkey lookup.
+- **Emission keys now always use hotkeys** — `_calculate_emissions` and `evaluate_responses` no longer fall back to `str(miner_id)` or index-based keys. `miner_hotkeys` is required; UID-based fallbacks removed.
+
+### Removed
+
+- **Dead code** — `create_challenge()`, `update_miner_score()`, `get_miner_scores()` from `DatabaseManager` (no callers).
+
 ## [1.2.1] - 2026-02-12
 
 ### Fixed
@@ -414,6 +427,8 @@ Initial production release of loosh-inference-validator.
 
 ---
 
+[1.2.2]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.0.1...v1.2.0
 [1.0.1]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Loosh-ai/loosh-inference-validator/releases/tag/v1.0.0
