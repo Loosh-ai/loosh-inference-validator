@@ -57,6 +57,10 @@ def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) 
         id=challenge_create.id,
         correlation_id=challenge_create.correlation_id,
         prompt=challenge_create.prompt,
+        model=challenge_create.model,
+        messages=challenge_create.messages,
+        tools=challenge_create.tools,
+        tool_choice=challenge_create.tool_choice,
         temperature=challenge_create.temperature,
         top_p=challenge_create.top_p,
         max_tokens=challenge_create.max_tokens,
@@ -495,6 +499,11 @@ async def main_loop():
                         challenge_id = challenge_data.id
                         prompt = challenge_data.prompt
                         
+                        # Extract OpenAI-compatible fields (messages, tools, tool_choice)
+                        messages = getattr(challenge_data, 'messages', None)
+                        tools = getattr(challenge_data, 'tools', None)
+                        tool_choice = getattr(challenge_data, 'tool_choice', None)
+                        
                         model = challenge_data.metadata.get("model", default_model) if challenge_data.metadata else "default_model"
                         model = default_model
                         
@@ -506,6 +515,10 @@ async def main_loop():
                             id=challenge_data.id,
                             correlation_id=getattr(challenge_data, 'correlation_id', None),
                             prompt=challenge_data.prompt,
+                            model=getattr(challenge_data, 'model', None),
+                            messages=messages,
+                            tools=tools,
+                            tool_choice=tool_choice,
                             temperature=challenge_data.temperature,
                             top_p=challenge_data.top_p,
                             max_tokens=challenge_data.max_tokens,
@@ -655,9 +668,13 @@ async def main_loop():
                                 ip=ip_str, ip_type=node.ip_type, port=node.port, protocol=node.protocol
                             )
                             
-                            # Create challenge
+                            # Create challenge — pass messages/tools/tool_choice for
+                            # OpenAI-compatible (cognitive execution) challenges.
                             challenge = InferenceChallenge(
                                 prompt=prompt,
+                                messages=messages,
+                                tools=tools,
+                                tool_choice=tool_choice,
                                 model=model,
                                 max_tokens=max_tokens,
                                 temperature=temperature,
