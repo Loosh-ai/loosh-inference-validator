@@ -1,5 +1,4 @@
 import asyncio
-import socket
 import time
 import random
 from datetime import datetime
@@ -11,7 +10,10 @@ from loguru import logger
 from fiber.chain.models import Node
 from fiber.validator.client import construct_server_address
 from validator.db.operations import DatabaseManager
-from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
+from validator.miner_api.ipv6_fix import (
+    construct_server_address_with_ipv6,
+    normalize_node_ip_to_address,
+)
 from validator.internal_config import MAX_MINERS as _INTERNAL_MAX_MINERS
 
 # Maximum concurrent availability checks to prevent connection pool exhaustion
@@ -37,32 +39,14 @@ async def check_miner_availability(
     Returns:
         bool: True if the miner is available, False otherwise
     """
-    # Convert IP from integer to string if needed
-    # Fiber stores IP as integer on chain, but fetch_nodes converts it with str() which
-    # just stringifies the integer (e.g., "1680356206" instead of "100.40.51.110")
-    # We need to convert the integer back to dotted decimal notation
-    ip_str = node.ip
-    try:
-        # Check if IP looks like an integer (numeric string) - convert to IP address
-        # Try to parse as integer
-        ip_int = int(ip_str)
-        # If it's a large number (> 255.255.255.255 = 4294967295), it's likely an integer IP
-        # Convert integer IP to dotted decimal notation
-        if node.ip_type == 4:  # IPv4
-            # Convert 32-bit integer to 4 bytes (big-endian) then to dotted decimal
-            ip_str = socket.inet_ntoa(ip_int.to_bytes(4, byteorder='big'))
-            logger.debug(f"Converted IPv4 from integer {ip_int} to {ip_str}")
-        else:  # IPv6
-            # For IPv6, use socket.inet_ntop
-            ip_str = socket.inet_ntop(socket.AF_INET6, ip_int.to_bytes(16, byteorder='big'))
-            logger.debug(f"Converted IPv6 from integer {ip_int} to {ip_str}")
-    except (ValueError, OverflowError, OSError):
-        # IP is already a proper IP address string, use as-is
-        # Or conversion failed, log and use original
-        if not ip_str.count('.') == 3 and not ':' in ip_str:
-            # Doesn't look like a valid IP, log warning
-            logger.warning(f"IP '{ip_str}' doesn't look like a valid IP address (ip_type={node.ip_type})")
-    
+    # Convert packed chain IP (e.g. digit-string "1113376410") to dotted decimal.
+    # ip_type from chain may be string "4", so we use a normalizer that compares ints.
+    ip_str = normalize_node_ip_to_address(node)
+    if ip_str and ip_str != str(node.ip):
+        logger.debug(f"Converted chain IP {node.ip} to {ip_str}")
+    if ip_str and ip_str.count('.') != 3 and ':' not in ip_str:
+        logger.warning(f"IP '{ip_str}' doesn't look like a valid IP address (ip_type={node.ip_type})")
+
     # Create a temporary node with converted IP for construct_server_address
     # (construct_server_address uses node.ip directly)
     node_with_ip = Node(
