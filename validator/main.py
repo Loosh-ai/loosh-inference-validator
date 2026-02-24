@@ -34,7 +34,10 @@ from fiber.validator.client import construct_server_address
 from fiber.chain.chain_utils import load_hotkey_keypair, load_coldkeypub_keypair
 from fiber.chain.fetch_nodes import get_nodes_for_netuid
 from fiber.chain.interface import get_substrate
-from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
+from validator.miner_api.ipv6_fix import (
+    construct_server_address_with_ipv6,
+    normalize_node_ip_to_address,
+)
 
 from pathlib import Path
 from datetime import timedelta
@@ -662,24 +665,7 @@ async def main_loop():
                         new_challenge_tasks = []
                         
                         for node in selected_miners:
-                            # Convert IP from integer to dotted decimal if needed
-                            import socket
-                            ip_str = node.ip
-                            try:
-                                # Check if IP looks like an integer (numeric string) - convert to IP address
-                                ip_int = int(ip_str)
-                                if node.ip_type == 4:  # IPv4
-                                    ip_str = socket.inet_ntoa(ip_int.to_bytes(4, byteorder='big'))
-                                elif node.ip_type == 6:  # IPv6
-                                    ip_str = socket.inet_ntop(socket.AF_INET6, ip_int.to_bytes(16, byteorder='big'))
-                            except (ValueError, OverflowError):
-                                # IP is already a string, use as is
-                                pass
-                            except Exception as e:
-                                logger.warning(f"Error converting IP for node {node.node_id}: {e}")
-                            
-                            # Create node with converted IP for construct_server_address
-                            from fiber.chain.models import Node
+                            ip_str = normalize_node_ip_to_address(node)
                             node_with_ip = Node(
                                 hotkey=node.hotkey, coldkey=node.coldkey, node_id=node.node_id,
                                 incentive=node.incentive, netuid=node.netuid, alpha_stake=node.alpha_stake,

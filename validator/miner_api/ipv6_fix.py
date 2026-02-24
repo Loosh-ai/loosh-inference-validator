@@ -5,7 +5,34 @@ This module provides utilities to properly handle IPv6 addresses in URLs,
 which is not currently supported in Fiber's construct_server_address function.
 """
 
+import socket
+
 from fiber.chain.models import Node
+
+
+def normalize_node_ip_to_address(node: Node) -> str:
+    """
+    Convert node.ip from chain format to a proper address string.
+
+    On chain, IPv4 is stored as a packed 32-bit integer. When read via Fiber
+    it can appear as a digit-string (e.g. "1113376410") or int. ip_type can be
+    int 4/6 or string "4"/"6". This normalizes to dotted decimal (IPv4) or
+    IPv6 string for URL construction.
+    """
+    ip_str = str(node.ip) if node.ip is not None else ""
+    ip_type = int(node.ip_type) if node.ip_type is not None else 4
+    if ip_str and ip_str.isdigit():
+        try:
+            ip_int = int(ip_str)
+            if ip_type == 4:
+                return socket.inet_ntoa(ip_int.to_bytes(4, byteorder="big"))
+            if ip_type == 6:
+                return socket.inet_ntop(
+                    socket.AF_INET6, ip_int.to_bytes(16, byteorder="big")
+                )
+        except (ValueError, OverflowError, OSError):
+            pass
+    return ip_str
 
 
 def construct_server_address_with_ipv6(

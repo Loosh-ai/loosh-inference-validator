@@ -7,7 +7,6 @@ This process runs independently to avoid blocking the main validator loop.
 import asyncio
 import multiprocessing
 import os
-import socket
 import time
 import random
 from datetime import datetime
@@ -22,7 +21,10 @@ from loguru import logger
 from fiber.chain.models import Node
 from fiber.validator.client import construct_server_address
 from validator.db.operations import DatabaseManager
-from validator.miner_api.ipv6_fix import construct_server_address_with_ipv6
+from validator.miner_api.ipv6_fix import (
+    construct_server_address_with_ipv6,
+    normalize_node_ip_to_address,
+)
 
 # Maximum concurrent availability checks
 MAX_CONCURRENT_AVAILABILITY_CHECKS = 20
@@ -30,22 +32,8 @@ MAX_CONCURRENT_AVAILABILITY_CHECKS = 20
 
 def node_to_dict(node: Node) -> dict:
     """Convert Node to dictionary for IPC."""
-    # Convert IP from integer to dotted decimal if needed
-    ip_str = str(node.ip) if node.ip is not None else ''
+    ip_str = normalize_node_ip_to_address(node)
     ip_type = int(node.ip_type) if node.ip_type is not None else 4
-    
-    # If IP is an integer (numeric string), convert to dotted decimal
-    if ip_str and ip_str.isdigit():
-        try:
-            ip_int = int(ip_str)
-            if ip_type == 4:  # IPv4
-                ip_str = socket.inet_ntoa(ip_int.to_bytes(4, byteorder='big'))
-            elif ip_type == 6:  # IPv6
-                ip_str = socket.inet_ntop(socket.AF_INET6, ip_int.to_bytes(16, byteorder='big'))
-        except (ValueError, OverflowError, OSError):
-            # Conversion failed, keep original
-            pass
-    
     return {
         'hotkey': str(node.hotkey) if node.hotkey else None,
         'coldkey': str(node.coldkey) if node.coldkey else None,
@@ -98,24 +86,10 @@ async def check_miner_availability_async(
     This is a copy of the check_miner_availability function but designed
     to run in a separate process.
     """
-    # IP should already be converted to dotted decimal during serialization
-    # But handle both cases: already converted (dotted decimal) or still integer (string)
-    ip_str = str(node.ip) if node.ip is not None else ''
-    
-    # If IP is still an integer (numeric string), convert to dotted decimal
-    if ip_str and ip_str.isdigit():
-        try:
-            ip_int = int(ip_str)
-            if node.ip_type == 4:  # IPv4
-                ip_str = socket.inet_ntoa(ip_int.to_bytes(4, byteorder='big'))
-            elif node.ip_type == 6:  # IPv6
-                ip_str = socket.inet_ntop(socket.AF_INET6, ip_int.to_bytes(16, byteorder='big'))
-        except (ValueError, OverflowError, OSError):
-            # Conversion failed, keep original
-            pass
-    elif ip_str and not (ip_str.count('.') == 3 or ':' in ip_str):
+    ip_str = normalize_node_ip_to_address(node)
+    if ip_str and ip_str.count('.') != 3 and ':' not in ip_str:
         logger.warning(f"IP '{ip_str}' doesn't look like a valid IP address (ip_type={node.ip_type})")
-    
+
     # Create a temporary node with converted IP
     node_with_ip = Node(
         hotkey=node.hotkey,
