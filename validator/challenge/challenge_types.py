@@ -4,6 +4,7 @@ from typing import Optional, List, Dict, Any, Union
 
 from pydantic import BaseModel, Field, model_validator
 from validator.challenge_api.models import Challenge
+from validator.internal_config import INTERNAL_CONFIG
 
 
 class ChallengeType(str, Enum):
@@ -41,11 +42,12 @@ class InferenceChallenge(BaseModel):
     tools: Optional[List[Dict[str, Any]]] = Field(None, description="Tool definitions for tool calling")
     tool_choice: Optional[Union[str, Dict[str, Any]]] = Field(None, description="Tool choice setting")
     
-    # Required parameters
-    model: str = Field(..., description="The model to use for inference")
-    max_tokens: int = Field(..., description="Maximum number of tokens to generate")
-    temperature: float = Field(..., description="Sampling temperature")
-    top_p: float = Field(..., description="Top-p sampling parameter")
+    # Inference parameters — defaults sourced from INTERNAL_CONFIG so all
+    # validators use identical values when the challenge omits a field.
+    model: str = Field(default_factory=lambda: INTERNAL_CONFIG.DEFAULT_MODEL, description="The model to use for inference")
+    max_tokens: int = Field(default_factory=lambda: INTERNAL_CONFIG.DEFAULT_MAX_TOKENS, description="Maximum number of tokens to generate")
+    temperature: float = Field(default_factory=lambda: INTERNAL_CONFIG.DEFAULT_TEMPERATURE, description="Sampling temperature")
+    top_p: float = Field(default_factory=lambda: INTERNAL_CONFIG.DEFAULT_TOP_P, description="Top-p sampling parameter")
     
     # Tracking
     correlation_id: Optional[str] = Field(None, description="Correlation ID for tracking requests end-to-end")

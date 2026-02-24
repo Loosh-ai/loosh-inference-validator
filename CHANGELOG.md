@@ -5,6 +5,19 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-02-22
+
+### New Features
+
+- **OpenAI-compatible `ChallengeCreate` endpoint model** — The `/challenge` push endpoint's `ChallengeCreate` request model now accepts `messages`, `model`, `tools`, and `tool_choice` as optional fields alongside the legacy `prompt` (which is now also optional), enabling cognitive execution to push message-format challenges without a `prompt` field. Both formats are accepted for backwards compatibility (`challenges.py`).
+- **`InferenceChallenge` inference parameter defaults from `INTERNAL_CONFIG`** — `model`, `max_tokens`, `temperature`, and `top_p` on `InferenceChallenge` are now optional with `default_factory` lambdas sourced from `INTERNAL_CONFIG` (`DEFAULT_MODEL`, `DEFAULT_MAX_TOKENS`, `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`) instead of being required. This ensures all validators use identical default values when a challenge omits inference parameters, which is the common case for message-based challenges from cognitive execution (`challenge_types.py`).
+
+### Improvements
+
+- **Inference parameter resolution priority in `main_loop`** — Parameter extraction now follows explicit precedence: top-level challenge field → `metadata` dict → `INTERNAL_CONFIG` default, replacing the previous logic that ignored the top-level `model` field in favour of a stale `default_model` string. `max_tokens`, `temperature`, and `top_p` also fall back to `INTERNAL_CONFIG` defaults when the challenge field is `None` (`main.py`).
+
+---
+
 ## [1.2.2] - 2026-02-14
 
 ### Fixed
@@ -427,6 +440,7 @@ Initial production release of loosh-inference-validator.
 
 ---
 
+[1.2.3]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.0.1...v1.2.0

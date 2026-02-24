@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
@@ -24,7 +24,12 @@ class ChallengeCreate(BaseModel):
     """Request model for creating/pushing a challenge."""
     id: str
     correlation_id: Optional[str] = None
-    prompt: str
+    prompt: Optional[str] = None
+    # OpenAI-compatible message format (preferred for cognitive execution)
+    messages: Optional[List[Dict[str, Any]]] = None
+    model: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None

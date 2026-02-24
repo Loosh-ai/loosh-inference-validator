@@ -57,6 +57,10 @@ def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) 
         id=challenge_create.id,
         correlation_id=challenge_create.correlation_id,
         prompt=challenge_create.prompt,
+        model=challenge_create.model,
+        messages=challenge_create.messages,
+        tools=challenge_create.tools,
+        tool_choice=challenge_create.tool_choice,
         temperature=challenge_create.temperature,
         top_p=challenge_create.top_p,
         max_tokens=challenge_create.max_tokens,
@@ -495,17 +499,46 @@ async def main_loop():
                         challenge_id = challenge_data.id
                         prompt = challenge_data.prompt
                         
-                        model = challenge_data.metadata.get("model", default_model) if challenge_data.metadata else "default_model"
-                        model = default_model
+                        # Extract OpenAI-compatible fields (messages, tools, tool_choice)
+                        messages = getattr(challenge_data, 'messages', None)
+                        tools = getattr(challenge_data, 'tools', None)
+                        tool_choice = getattr(challenge_data, 'tool_choice', None)
                         
-                        max_tokens = challenge_data.max_tokens
-                        temperature = challenge_data.temperature
-                        top_p = challenge_data.top_p
+                        # Prefer the top-level model field (set by challenge API);
+                        # fall back to metadata, then INTERNAL_CONFIG default.
+                        model = (
+                            getattr(challenge_data, 'model', None)
+                            or (challenge_data.metadata.get("model") if challenge_data.metadata else None)
+                            or default_model
+                        )
+                        
+                        # Apply INTERNAL_CONFIG defaults when the challenge omits
+                        # optional inference parameters (common for message-based
+                        # challenges from cognitive execution).
+                        max_tokens = (
+                            challenge_data.max_tokens
+                            if challenge_data.max_tokens is not None
+                            else INTERNAL_CONFIG.DEFAULT_MAX_TOKENS
+                        )
+                        temperature = (
+                            challenge_data.temperature
+                            if challenge_data.temperature is not None
+                            else INTERNAL_CONFIG.DEFAULT_TEMPERATURE
+                        )
+                        top_p = (
+                            challenge_data.top_p
+                            if challenge_data.top_p is not None
+                            else INTERNAL_CONFIG.DEFAULT_TOP_P
+                        )
 
                         challenge_orig = ChallengeAPIRequest(
                             id=challenge_data.id,
                             correlation_id=getattr(challenge_data, 'correlation_id', None),
                             prompt=challenge_data.prompt,
+                            model=getattr(challenge_data, 'model', None),
+                            messages=messages,
+                            tools=tools,
+                            tool_choice=tool_choice,
                             temperature=challenge_data.temperature,
                             top_p=challenge_data.top_p,
                             max_tokens=challenge_data.max_tokens,
@@ -655,9 +688,13 @@ async def main_loop():
                                 ip=ip_str, ip_type=node.ip_type, port=node.port, protocol=node.protocol
                             )
                             
-                            # Create challenge
+                            # Create challenge — pass messages/tools/tool_choice for
+                            # OpenAI-compatible (cognitive execution) challenges.
                             challenge = InferenceChallenge(
                                 prompt=prompt,
+                                messages=messages,
+                                tools=tools,
+                                tool_choice=tool_choice,
                                 model=model,
                                 max_tokens=max_tokens,
                                 temperature=temperature,
