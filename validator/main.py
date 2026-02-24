@@ -504,12 +504,32 @@ async def main_loop():
                         tools = getattr(challenge_data, 'tools', None)
                         tool_choice = getattr(challenge_data, 'tool_choice', None)
                         
-                        model = challenge_data.metadata.get("model", default_model) if challenge_data.metadata else "default_model"
-                        model = default_model
+                        # Prefer the top-level model field (set by challenge API);
+                        # fall back to metadata, then INTERNAL_CONFIG default.
+                        model = (
+                            getattr(challenge_data, 'model', None)
+                            or (challenge_data.metadata.get("model") if challenge_data.metadata else None)
+                            or default_model
+                        )
                         
-                        max_tokens = challenge_data.max_tokens
-                        temperature = challenge_data.temperature
-                        top_p = challenge_data.top_p
+                        # Apply INTERNAL_CONFIG defaults when the challenge omits
+                        # optional inference parameters (common for message-based
+                        # challenges from cognitive execution).
+                        max_tokens = (
+                            challenge_data.max_tokens
+                            if challenge_data.max_tokens is not None
+                            else INTERNAL_CONFIG.DEFAULT_MAX_TOKENS
+                        )
+                        temperature = (
+                            challenge_data.temperature
+                            if challenge_data.temperature is not None
+                            else INTERNAL_CONFIG.DEFAULT_TEMPERATURE
+                        )
+                        top_p = (
+                            challenge_data.top_p
+                            if challenge_data.top_p is not None
+                            else INTERNAL_CONFIG.DEFAULT_TOP_P
+                        )
 
                         challenge_orig = ChallengeAPIRequest(
                             id=challenge_data.id,
