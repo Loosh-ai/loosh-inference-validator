@@ -56,6 +56,10 @@ class ConsensusConfig:
     enable_garbage_alerts: bool = True  # Log warnings for low-quality consensus
     garbage_cluster_threshold: float = 0.4  # Alert if cluster avg quality < this
 
+    # Minimum prompt-relevance score required to participate in quality evaluation.
+    # Set to 0.0 to disable.
+    min_raw_prompt_relevance: float = 0.20
+
 
 @dataclass
 class ConsensusResult:
@@ -242,6 +246,14 @@ class ConsensusEngine:
         return cosine_similarity(self.embeddings)
 
     def _apply_clustering_filter(self, sim_matrix: np.ndarray) -> np.ndarray:
+        # AgglomerativeClustering requires at least 2 samples — skip clustering
+        # when only one response is present (e.g. low-miner-count testnet scenarios).
+        if len(self.embeddings) < 2:
+            logger.warning(
+                "[CLUSTER] Only 1 response available — skipping agglomerative clustering filter."
+            )
+            return sim_matrix
+
         distance_matrix = 1 - sim_matrix
         # In scikit-learn 1.2+, 'affinity' was replaced with 'metric'
         # For precomputed distance matrices, use metric='precomputed'
@@ -494,6 +506,12 @@ class ConsensusEngine:
         3. Specificity: Concrete details vs vague statements
         4. Coherence: Logical structure and completeness
         """
+        raw_relevance: Optional[np.ndarray] = None
+        if self.prompt_embedding is not None and len(self.embeddings) == len(self.responses):
+            raw_relevance = cosine_similarity(
+                [self.prompt_embedding], self.embeddings
+            )[0]  # shape (N,)
+
         # ── Enhanced scorer path (Tier 4) ────────────────────────────
         if (
             self.quality_scorer is not None
@@ -523,7 +541,7 @@ class ConsensusEngine:
                     f"mean={quality_array.mean():.3f}, min={quality_array.min():.3f}, "
                     f"max={quality_array.max():.3f}, threshold={config.quality_threshold:.3f}"
                 )
-                return quality_array
+                return self._apply_raw_relevance_gate(quality_array, raw_relevance, config)
             except Exception as e:
                 logger.warning(
                     f"[QUALITY] Enhanced scorer failed ({e}); falling back to heuristic scoring"
@@ -535,7 +553,9 @@ class ConsensusEngine:
         for i, response in enumerate(self.responses):
             # 1. Prompt-response relevance (cosine similarity)
             relevance = 0.5  # Default if no prompt embedding
-            if self.prompt_embedding is not None and len(self.embeddings) > i:
+            if raw_relevance is not None:
+                relevance = float(raw_relevance[i])
+            elif self.prompt_embedding is not None and len(self.embeddings) > i:
                 response_emb = self.embeddings[i:i+1]  # Keep 2D
                 relevance = cosine_similarity([self.prompt_embedding], response_emb)[0][0]
             
@@ -571,7 +591,40 @@ class ConsensusEngine:
                 f"threshold={config.quality_threshold:.3f}"
             )
         
-        return quality_array
+        return self._apply_raw_relevance_gate(quality_array, raw_relevance, config)
+
+    def _apply_raw_relevance_gate(
+        self,
+        quality_array: np.ndarray,
+        raw_relevance: Optional[np.ndarray],
+        config: "ConsensusConfig",
+    ) -> np.ndarray:
+        """Apply the minimum prompt-relevance gate to the quality score array.
+
+        Args:
+            quality_array: Composite quality scores, shape (N,).
+            raw_relevance: Raw prompt-relevance scores, shape (N,), or None if unavailable.
+            config: Current ConsensusConfig.
+
+        Returns:
+            Modified quality_array with gate applied.
+        """
+        gate = getattr(config, "min_raw_prompt_relevance", 0.0)
+        if gate <= 0.0 or raw_relevance is None or len(raw_relevance) != len(quality_array):
+            return quality_array
+
+        gated_array = quality_array.copy()
+        gated_count = 0
+        for i, rel in enumerate(raw_relevance):
+            if rel < gate:
+                gated_array[i] = 0.0
+                gated_count += 1
+
+        if gated_count > 0:
+            logger.info(
+                f"[QUALITY] Relevance gate filtered {gated_count}/{len(quality_array)} response(s)"
+            )
+        return gated_array
     
     def _apply_semantic_quality_filter(self, config: ConsensusConfig):
         """

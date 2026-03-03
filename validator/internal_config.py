@@ -9,6 +9,7 @@ To change these values, modify this file directly and redeploy.
 
 IMPORTANT: Changes to these values affect all validators and should be
 carefully considered for network-wide impact.
+Note: Immediately prior values are recorded next to the current values for reference.
 """
 
 from datetime import timedelta
@@ -36,7 +37,7 @@ class InternalConfig:
     # Maximum number of miners to select per challenge round.
     # Each challenge randomly samples this many from ALL available miners,
     # ensuring fair rotation across the full pool.
-    MAX_MINERS: int = 10
+    MAX_MINERS: int = 7 #Prior Value: 10 Changed in v1.2.4 3/3/2026. Intended to reduce network load & latency
     
     # Maximum stake for a node to be considered a miner (not a validator).
     # Nodes with stake >= this are treated as validators and excluded
@@ -55,10 +56,23 @@ class InternalConfig:
     CHALLENGE_INTERVAL_SECONDS: int = 300
     
     # Timeout for miner responses to challenges
-    CHALLENGE_TIMEOUT_SECONDS: int = 120
+    CHALLENGE_TIMEOUT_SECONDS: int = 60 #Prior Value: 120 Changed in v1.2.4 3/3/2026. Intended to reduce latency
+
+    # =========================================================================
+    # Dendrite Parameters
+    # =========================================================================
+
+    # Default timeout (seconds) for dendrite calls.
+    DENDRITE_TIMEOUT: int = 30
+
+    # Number of retries for failed dendrite calls.
+    DENDRITE_MAX_RETRY: int = 2
+
+    # Delay (seconds) between dendrite retries.
+    DENDRITE_RETRY_DELAY: float = 0.5
     
     # Timeout for evaluation processing
-    EVALUATION_TIMEOUT_SECONDS: int = 300
+    EVALUATION_TIMEOUT_SECONDS: int = 60 #Prior Value: 300 Changed in v1.2.4 3/3/2026. Intended to reduce latency
     
     # =========================================================================
     # Scoring Parameters
@@ -122,6 +136,12 @@ class InternalConfig:
     # When disabled, evaluation and heatmap generation still run, but narrative is skipped.
     # Not recommended for production - requires langchain-openai and an LLM API endpoint.
     ENABLE_NARRATIVE_GENERATION: bool = False
+
+    # Temperature for the narrative-generation LLM call.
+    NARRATIVE_LLM_TEMPERATURE: float = 0.7
+
+    # Maximum tokens for the narrative-generation LLM call.
+    NARRATIVE_LLM_MAX_TOKENS: int = 800
     
     # Enable heatmap generation
     # Hardcoded to False to reduce processing overhead and upload failures
@@ -138,6 +158,64 @@ class InternalConfig:
     # How often to refresh the metagraph from chain (in seconds).
     # Controls how quickly new node registrations are picked up.
     METAGRAPH_REFRESH_INTERVAL_SECONDS: int = 300
+
+    # Sleep duration (seconds) before retrying after a metagraph refresh error.
+    METAGRAPH_REFRESH_ERROR_RETRY_SECONDS: int = 60
+
+    # =========================================================================
+    # Weight Setting Loop Parameters
+    # =========================================================================
+
+    # Maximum number of consecutive weight-setting failures before the loop
+    # switches to a longer back-off interval.
+    WEIGHTS_MAX_CONSECUTIVE_FAILURES: int = 3
+
+    # Maximum initial delay (seconds) before the first weight-setting attempt.
+    # Capped at this value even when WEIGHTS_INTERVAL_SECONDS is larger.
+    WEIGHTS_INITIAL_DELAY_MAX_SECONDS: int = 300
+
+    # =========================================================================
+    # Database Cleanup Loop Parameters
+    # =========================================================================
+
+    # How often to run the database cleanup task (hours).
+    DB_CLEANUP_INTERVAL_HOURS: int = 24
+
+    # How many hours of evaluation data to retain before pruning.
+    DB_CLEANUP_RETENTION_HOURS: int = 48
+
+    # Sleep duration (seconds) before retrying after a cleanup error.
+    DB_CLEANUP_ERROR_RETRY_SECONDS: int = 3600
+
+    # =========================================================================
+    # Challenge Consumer & Pending Queue Loop Parameters
+    # =========================================================================
+
+    # How long (seconds) to block on the challenge queue get() call each iteration.
+    # Lower values reduce pickup latency; combined with CHALLENGE_QUEUE_POLL_INTERVAL
+    # these two control the worst-case challenge-start delay.
+    CHALLENGE_QUEUE_GET_TIMEOUT: float = 0.5 #Prior Value: 1.0 Changed in v1.2.4 3/3/2026. Intended to reduce latency
+
+    # How long (seconds) to sleep when the queue is empty before polling again.
+    CHALLENGE_QUEUE_POLL_INTERVAL: float = 0.3 #Prior Value: 1.0 Changed in v1.2.4 3/3/2026. Intended to reduce latency
+
+    # How long (seconds) to sleep after an unhandled exception in the consumer loop.
+    CHALLENGE_CONSUMER_ERROR_DELAY: float = 1.0
+
+    # Maximum time (seconds) to wait for available nodes before dropping a
+    # queued pending challenge.
+    CHALLENGE_PENDING_NODE_MAX_WAIT_SECONDS: int = 120 #Prior Value: 300 Changed in v1.2.4 3/3/2026. Intended to reduce latency 
+
+    # How often (seconds) to re-check for available nodes while a challenge
+    # is waiting in the pending queue.
+    CHALLENGE_PENDING_NODE_POLL_INTERVAL: float = 2.0
+
+    # Sleep duration (seconds) between iterations of the pending-challenges
+    # processor to avoid a tight busy loop.
+    CHALLENGE_PENDING_PROCESSOR_LOOP_DELAY: float = 0.5
+
+    # Sleep duration (seconds) after an error in the pending-challenges processor.
+    CHALLENGE_PENDING_PROCESSOR_ERROR_DELAY: float = 1.0
     
     # =========================================================================
     # LLM Behavior Parameters
@@ -174,7 +252,7 @@ class InternalConfig:
     FIBER_KEY_TTL_SECONDS: int = 3600
     
     # Timeout for Fiber handshake operations in seconds
-    FIBER_HANDSHAKE_TIMEOUT_SECONDS: int = 30
+    FIBER_HANDSHAKE_TIMEOUT_SECONDS: int = 15 #Prior Value: 30 Changed in v1.2.4 3/3/2026. Intended to reduce latency
     
     # Enable automatic key rotation for Fiber symmetric keys
     FIBER_ENABLE_KEY_ROTATION: bool = True
@@ -238,6 +316,16 @@ class InternalConfig:
     # cosine similarity with the prompt exceeds this gate.
     # Reduces GPU work by ~50% on average workloads.
     SENTENCE_LEVEL_RELEVANCE_GATE: float = 0.5
+
+    # =========================================================================
+    # Prompt-Relevance Gates
+    # =========================================================================
+
+    # Minimum prompt-relevance score for multi-miner evaluation path.
+    QUALITY_MIN_RAW_PROMPT_RELEVANCE: float = 0.20
+
+    # Minimum prompt-relevance score for single-miner evaluation path.
+    QUALITY_SINGLE_MINER_MIN_RELEVANCE: float = 0.20
     
     # =========================================================================
     # Quality Scoring Weights (must sum to ~1.0)
@@ -295,9 +383,16 @@ class InternalConfig:
     # Percentile of similarity distribution used for adaptive very-high threshold.
     SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE: float = 99.99
     
+    # Minimum group size for the SybilDetector to flag a cluster as suspicious.
+    SYBIL_MIN_GROUP_SIZE: int = 2
+
     # Minimum response length (characters) for sybil pair detection.
     # Short/canonical answers are excluded to reduce false positives.
     SYBIL_MIN_RESPONSE_LENGTH: int = 50
+
+    # Maximum characters of response text stored per entry in sybil detection
+    # results (pairs and groups).  Keeps DB rows from growing unbounded.
+    SYBIL_STORAGE_TEXT_MAX_LENGTH: int = 500
     
     # Minimum pairwise similarity within a group for it to be valid.
     SYBIL_MIN_INTERNAL_SIMILARITY: float = 0.90
@@ -316,7 +411,146 @@ class InternalConfig:
     
     # Sentence-trajectory analysis: number of KMeans clusters per response.
     SYBIL_TRAJECTORY_N_CLUSTERS: int = 5
+
+        # =========================================================================
+    # Sybil Penalty Parameters
+    # =========================================================================
     
+    # Enable sybil penalty in weight setting
+    # When False, sybil scores are fetched and logged but no penalty is applied.
+    SYBIL_PENALTY_ENABLED: bool = True
+    
+    # Maximum penalty that can be applied to a miner's weight (0.0 – 1.0).
+    # A sybil_score of 1.0 results in an 80% weight reduction (score * 0.2).
+    SYBIL_PENALTY_MAX: float = 1.0 #Prior Value: 0.8 Changed in v1.2.4 3/3/2026. Intended to reduce sybil identified miner emissions. Grace Period is over.
+    
+    # Minimum fraction of EMA a penalized miner always retains (grace floor).
+    # Regardless of SYBIL_PENALTY_MAX, the penalized score will never drop
+    # below ``ema_score * SYBIL_PENALTY_MIN_RETENTION``.
+    # Set to 0.0 to allow full effect of SYBIL_PENALTY_MAX with no floor.
+    # Example: 0.15 means the worst offender still keeps 15% of their EMA.
+    SYBIL_PENALTY_MIN_RETENTION: float = 0.05 #Prior Value: 0.15 Changed in v1.2.4 3/3/2026. Intended to reduce sybil identified miner emissions. Grace Period is over.
+    
+    # Sybil score threshold below which no penalty is applied.
+    # Miners with sybil_score < this value are treated as clean.
+    SYBIL_PENALTY_THRESHOLD: float = 0.1
+    
+    # Safety valve: maximum fraction of serving miners that may be penalized
+    # within the SOFT tier (score < SYBIL_HARD_PENALTY_SCORE_FLOOR).
+    # If the soft-tier candidate count exceeds this fraction, fallback-K
+    # restricts penalties to the worst-K soft-tier miners.
+    # Miners in the HARD tier (score >= SYBIL_HARD_PENALTY_SCORE_FLOOR) are
+    # ALWAYS penalized regardless of how many are flagged — the safety valve
+    # does not apply to high-confidence detections.
+    # This prevents a miscalibrated detector from tanking the subnet while
+    # ensuring confirmed high-confidence sybils can never hide behind a
+    # crowded lower tier.
+    SYBIL_SAFETY_MAX_PENALIZED_FRACTION: float = 0.33
+
+    # Score floor above which the safety valve is bypassed entirely.
+    # Miners with sybil_score >= this value are always penalized, regardless
+    # of how many miners are flagged in total (Option A: score-band bypass).
+    # Must be > SYBIL_PENALTY_THRESHOLD and <= 1.0.
+    # Default 0.60 corresponds to ~7+ detection appearances with K=2 on
+    # detection-only signal, or fewer when infrastructure signals contribute.
+    SYBIL_HARD_PENALTY_SCORE_FLOOR: float = 0.60
+    
+    # TTL for cached sybil scores fetched from the Challenge API (seconds).
+    # During this window, set_weights reuses the previous fetch result.
+    SYBIL_SCORE_CACHE_TTL_SECONDS: int = 300
+    
+    # =========================================================================
+    # Emission Calculation Parameters
+    # =========================================================================
+
+    # Multiplier applied to a miner's emission when their response is part of
+    # the consensus cluster.
+    EMISSION_CONSENSUS_BONUS: float = 1.2
+
+    # Controls the sensitivity of the score-difference bonus.
+    # Lower value = more sensitive to small score gaps; higher = less sensitive.
+    # With 0.1: diff of 1 → ~1.05×, diff of 10 → ~1.24×, diff of 20 → ~1.38×.
+    EMISSION_SCORE_DIFF_SCALE_FACTOR: float = 0.1
+
+    # Maximum additive bonus magnitude for the score-difference multiplier.
+    # The multiplier is 1.0 + EMISSION_SCORE_DIFF_MAX_BONUS * tanh(diff * scale).
+    EMISSION_SCORE_DIFF_MAX_BONUS: float = 0.5
+
+    # Hard cap on the score-difference multiplier (1.0 + max_bonus ceiling).
+    EMISSION_SCORE_DIFF_MAX_MULTIPLIER: float = 1.5
+
+    # =========================================================================
+    # Consensus Engine Configuration Parameters
+    # =========================================================================
+
+    # Minimum number of valid responses required to run sybil detection.
+    CONSENSUS_MIN_RESPONSES_FOR_SYBIL: int = 2
+
+    # Minimum number of valid responses required to generate a similarity heatmap.
+    CONSENSUS_MIN_RESPONSES_FOR_HEATMAP: int = 2
+
+    # Minimum number of valid responses required to enable LOF outlier detection.
+    # LOF requires at least n_neighbors + 1 samples; 3 is the practical minimum.
+    CONSENSUS_MIN_RESPONSES_FOR_OUTLIER_DETECTION: int = 3
+
+    # Minimum number of valid responses required to enable clustering.
+    CONSENSUS_MIN_RESPONSES_FOR_CLUSTERING: int = 2
+
+    # Enable weighted scoring in consensus evaluation.
+    CONSENSUS_USE_WEIGHTED_SCORING: bool = True
+
+    # Apply legacy word-length quality filter during consensus.
+    # Disabled — superseded by semantic quality assessment.
+    CONSENSUS_APPLY_QUALITY_FILTER: bool = False
+
+    # Legacy quality sensitivity parameter (deprecated, kept for backward compat).
+    CONSENSUS_QUALITY_SENSITIVITY: float = 0.7
+
+    # Lambda factor for consensus score blending.
+    CONSENSUS_LAMBDA_FACTOR: float = 1.0
+
+    # Minimum similarity threshold for a response to participate in consensus.
+    CONSENSUS_THRESHOLD_MIN: float = 0.7
+
+    # Enable semantic quality assessment during consensus.
+    CONSENSUS_ENABLE_SEMANTIC_QUALITY: bool = True
+
+    # Minimum semantic quality score required to participate in consensus.
+    CONSENSUS_QUALITY_THRESHOLD: float = 0.35
+
+    # Weight for prompt-relevance component within consensus quality scoring.
+    CONSENSUS_QUALITY_PROMPT_RELEVANCE_WEIGHT: float = 0.4
+
+    # Weight for density component within consensus quality scoring.
+    CONSENSUS_QUALITY_DENSITY_WEIGHT: float = 0.2
+
+    # Weight for specificity component within consensus quality scoring.
+    CONSENSUS_QUALITY_SPECIFICITY_WEIGHT: float = 0.2
+
+    # Weight for coherence component within consensus quality scoring.
+    CONSENSUS_QUALITY_COHERENCE_WEIGHT: float = 0.2
+
+    # Enable smart outlier detection that considers quality delta between
+    # a candidate response and the consensus cluster.
+    CONSENSUS_ENABLE_SMART_OUTLIER_DETECTION: bool = True
+
+    # Minimum quality gap between an outlier and the cluster mean to trigger removal.
+    CONSENSUS_OUTLIER_QUALITY_DELTA: float = 0.15
+
+    # Enable diversity bonus for responses that expand the semantic coverage
+    # of the consensus set.
+    CONSENSUS_ENABLE_DIVERSITY_BONUS: bool = True
+
+    # Maximum diversity bonus that can be added to a response's consensus score.
+    CONSENSUS_MAX_DIVERSITY_BONUS: float = 0.15
+
+    # Enable garbage cluster alerts that flag responses clustering far from
+    # the main semantic consensus.
+    CONSENSUS_ENABLE_GARBAGE_ALERTS: bool = True
+
+    # Maximum intra-cluster similarity below which a cluster is flagged as garbage.
+    CONSENSUS_GARBAGE_CLUSTER_THRESHOLD: float = 0.4
+
     # =========================================================================
     # Migration Parameters (temporary — remove after migration completes)
     # =========================================================================
@@ -351,38 +585,7 @@ class InternalConfig:
     # treated as solo miners and retain full weight.
     ENTITY_MIN_GROUP_SIZE: int = 2
     
-    # =========================================================================
-    # Sybil Penalty Parameters
-    # =========================================================================
-    
-    # Enable sybil penalty in weight setting
-    # When False, sybil scores are fetched and logged but no penalty is applied.
-    SYBIL_PENALTY_ENABLED: bool = True
-    
-    # Maximum penalty that can be applied to a miner's weight (0.0 – 1.0).
-    # A sybil_score of 1.0 results in an 80% weight reduction (score * 0.2).
-    SYBIL_PENALTY_MAX: float = 0.8
-    
-    # Minimum fraction of EMA a penalized miner always retains (grace floor).
-    # Regardless of SYBIL_PENALTY_MAX, the penalized score will never drop
-    # below ``ema_score * SYBIL_PENALTY_MIN_RETENTION``.
-    # Set to 0.0 to allow full effect of SYBIL_PENALTY_MAX with no floor.
-    # Example: 0.15 means the worst offender still keeps 15% of their EMA.
-    SYBIL_PENALTY_MIN_RETENTION: float = 0.15
-    
-    # Sybil score threshold below which no penalty is applied.
-    # Miners with sybil_score < this value are treated as clean.
-    SYBIL_PENALTY_THRESHOLD: float = 0.1
-    
-    # Safety valve: maximum fraction of serving miners that may be penalized.
-    # If more than this fraction would receive a penalty, the sybil penalty
-    # step is skipped entirely and a critical warning is logged.
-    # This prevents a miscalibrated sybil detector from tanking the entire subnet.
-    SYBIL_SAFETY_MAX_PENALIZED_FRACTION: float = 0.33
-    
-    # TTL for cached sybil scores fetched from the Challenge API (seconds).
-    # During this window, set_weights reuses the previous fetch result.
-    SYBIL_SCORE_CACHE_TTL_SECONDS: int = 300
+
     
     # =========================================================================
     # Convenience Properties (computed from base values)
@@ -420,6 +623,9 @@ MAX_MINERS = INTERNAL_CONFIG.MAX_MINERS
 MAX_MINER_STAKE = INTERNAL_CONFIG.MAX_MINER_STAKE
 CHALLENGE_INTERVAL_SECONDS = INTERNAL_CONFIG.CHALLENGE_INTERVAL_SECONDS
 CHALLENGE_TIMEOUT_SECONDS = INTERNAL_CONFIG.CHALLENGE_TIMEOUT_SECONDS
+DENDRITE_TIMEOUT = INTERNAL_CONFIG.DENDRITE_TIMEOUT
+DENDRITE_MAX_RETRY = INTERNAL_CONFIG.DENDRITE_MAX_RETRY
+DENDRITE_RETRY_DELAY = INTERNAL_CONFIG.DENDRITE_RETRY_DELAY
 EVALUATION_TIMEOUT_SECONDS = INTERNAL_CONFIG.EVALUATION_TIMEOUT_SECONDS
 SCORE_THRESHOLD = INTERNAL_CONFIG.SCORE_THRESHOLD
 WEIGHTS_INTERVAL_SECONDS = INTERNAL_CONFIG.WEIGHTS_INTERVAL_SECONDS
@@ -432,6 +638,25 @@ EMERGENCY_MODE_THRESHOLD = INTERNAL_CONFIG.EMERGENCY_MODE_THRESHOLD
 
 # Metagraph Refresh
 METAGRAPH_REFRESH_INTERVAL_SECONDS = INTERNAL_CONFIG.METAGRAPH_REFRESH_INTERVAL_SECONDS
+METAGRAPH_REFRESH_ERROR_RETRY_SECONDS = INTERNAL_CONFIG.METAGRAPH_REFRESH_ERROR_RETRY_SECONDS
+
+# Weight Setting Loop
+WEIGHTS_MAX_CONSECUTIVE_FAILURES = INTERNAL_CONFIG.WEIGHTS_MAX_CONSECUTIVE_FAILURES
+WEIGHTS_INITIAL_DELAY_MAX_SECONDS = INTERNAL_CONFIG.WEIGHTS_INITIAL_DELAY_MAX_SECONDS
+
+# Database Cleanup Loop
+DB_CLEANUP_INTERVAL_HOURS = INTERNAL_CONFIG.DB_CLEANUP_INTERVAL_HOURS
+DB_CLEANUP_RETENTION_HOURS = INTERNAL_CONFIG.DB_CLEANUP_RETENTION_HOURS
+DB_CLEANUP_ERROR_RETRY_SECONDS = INTERNAL_CONFIG.DB_CLEANUP_ERROR_RETRY_SECONDS
+
+# Challenge Consumer & Pending Queue Loop
+CHALLENGE_QUEUE_GET_TIMEOUT = INTERNAL_CONFIG.CHALLENGE_QUEUE_GET_TIMEOUT
+CHALLENGE_QUEUE_POLL_INTERVAL = INTERNAL_CONFIG.CHALLENGE_QUEUE_POLL_INTERVAL
+CHALLENGE_CONSUMER_ERROR_DELAY = INTERNAL_CONFIG.CHALLENGE_CONSUMER_ERROR_DELAY
+CHALLENGE_PENDING_NODE_MAX_WAIT_SECONDS = INTERNAL_CONFIG.CHALLENGE_PENDING_NODE_MAX_WAIT_SECONDS
+CHALLENGE_PENDING_NODE_POLL_INTERVAL = INTERNAL_CONFIG.CHALLENGE_PENDING_NODE_POLL_INTERVAL
+CHALLENGE_PENDING_PROCESSOR_LOOP_DELAY = INTERNAL_CONFIG.CHALLENGE_PENDING_PROCESSOR_LOOP_DELAY
+CHALLENGE_PENDING_PROCESSOR_ERROR_DELAY = INTERNAL_CONFIG.CHALLENGE_PENDING_PROCESSOR_ERROR_DELAY
 
 # LLM Behavior
 DEFAULT_MODEL = INTERNAL_CONFIG.DEFAULT_MODEL
@@ -444,6 +669,8 @@ SENTENCE_TRANSFORMER_MODEL = INTERNAL_CONFIG.SENTENCE_TRANSFORMER_MODEL
 ENABLE_NARRATIVE_GENERATION = INTERNAL_CONFIG.ENABLE_NARRATIVE_GENERATION
 ENABLE_HEATMAP_GENERATION = INTERNAL_CONFIG.ENABLE_HEATMAP_GENERATION
 ENABLE_QUALITY_PLOTS = INTERNAL_CONFIG.ENABLE_QUALITY_PLOTS
+NARRATIVE_LLM_TEMPERATURE = INTERNAL_CONFIG.NARRATIVE_LLM_TEMPERATURE
+NARRATIVE_LLM_MAX_TOKENS = INTERNAL_CONFIG.NARRATIVE_LLM_MAX_TOKENS
 
 # Concurrency
 MAX_CONCURRENT_CHALLENGES = INTERNAL_CONFIG.MAX_CONCURRENT_CHALLENGES
@@ -475,6 +702,7 @@ SYBIL_PENALTY_MAX = INTERNAL_CONFIG.SYBIL_PENALTY_MAX
 SYBIL_PENALTY_MIN_RETENTION = INTERNAL_CONFIG.SYBIL_PENALTY_MIN_RETENTION
 SYBIL_PENALTY_THRESHOLD = INTERNAL_CONFIG.SYBIL_PENALTY_THRESHOLD
 SYBIL_SAFETY_MAX_PENALIZED_FRACTION = INTERNAL_CONFIG.SYBIL_SAFETY_MAX_PENALIZED_FRACTION
+SYBIL_HARD_PENALTY_SCORE_FLOOR = INTERNAL_CONFIG.SYBIL_HARD_PENALTY_SCORE_FLOOR
 SYBIL_SCORE_CACHE_TTL_SECONDS = INTERNAL_CONFIG.SYBIL_SCORE_CACHE_TTL_SECONDS
 
 # Embedding Performance
@@ -483,6 +711,8 @@ EMBEDDING_MAX_SEQ_LENGTH_SENTENCE = INTERNAL_CONFIG.EMBEDDING_MAX_SEQ_LENGTH_SEN
 EMBEDDING_BATCH_SIZE_DOC = INTERNAL_CONFIG.EMBEDDING_BATCH_SIZE_DOC
 EMBEDDING_BATCH_SIZE_SENTENCE = INTERNAL_CONFIG.EMBEDDING_BATCH_SIZE_SENTENCE
 SENTENCE_LEVEL_RELEVANCE_GATE = INTERNAL_CONFIG.SENTENCE_LEVEL_RELEVANCE_GATE
+QUALITY_MIN_RAW_PROMPT_RELEVANCE = INTERNAL_CONFIG.QUALITY_MIN_RAW_PROMPT_RELEVANCE
+QUALITY_SINGLE_MINER_MIN_RELEVANCE = INTERNAL_CONFIG.QUALITY_SINGLE_MINER_MIN_RELEVANCE
 
 # Quality Scoring Weights
 QUALITY_RELEVANCE_WEIGHT = INTERNAL_CONFIG.QUALITY_RELEVANCE_WEIGHT
@@ -512,7 +742,9 @@ SYBIL_MIN_HIGH_THRESHOLD = INTERNAL_CONFIG.SYBIL_MIN_HIGH_THRESHOLD
 SYBIL_MIN_VERY_HIGH_THRESHOLD = INTERNAL_CONFIG.SYBIL_MIN_VERY_HIGH_THRESHOLD
 SYBIL_HIGH_SIMILARITY_PERCENTILE = INTERNAL_CONFIG.SYBIL_HIGH_SIMILARITY_PERCENTILE
 SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE = INTERNAL_CONFIG.SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE
+SYBIL_MIN_GROUP_SIZE = INTERNAL_CONFIG.SYBIL_MIN_GROUP_SIZE
 SYBIL_MIN_RESPONSE_LENGTH = INTERNAL_CONFIG.SYBIL_MIN_RESPONSE_LENGTH
+SYBIL_STORAGE_TEXT_MAX_LENGTH = INTERNAL_CONFIG.SYBIL_STORAGE_TEXT_MAX_LENGTH
 SYBIL_MIN_INTERNAL_SIMILARITY = INTERNAL_CONFIG.SYBIL_MIN_INTERNAL_SIMILARITY
 SYBIL_FUSION_SEMANTIC_THRESHOLD = INTERNAL_CONFIG.SYBIL_FUSION_SEMANTIC_THRESHOLD
 SYBIL_FUSION_LEXICAL_THRESHOLD = INTERNAL_CONFIG.SYBIL_FUSION_LEXICAL_THRESHOLD
@@ -523,3 +755,32 @@ SYBIL_TRAJECTORY_N_CLUSTERS = INTERNAL_CONFIG.SYBIL_TRAJECTORY_N_CLUSTERS
 # Migration
 PARALLEL_VALIDATION = INTERNAL_CONFIG.PARALLEL_VALIDATION
 FALLBACK_MODEL = INTERNAL_CONFIG.FALLBACK_MODEL
+
+# Emission Calculation
+EMISSION_CONSENSUS_BONUS = INTERNAL_CONFIG.EMISSION_CONSENSUS_BONUS
+EMISSION_SCORE_DIFF_SCALE_FACTOR = INTERNAL_CONFIG.EMISSION_SCORE_DIFF_SCALE_FACTOR
+EMISSION_SCORE_DIFF_MAX_BONUS = INTERNAL_CONFIG.EMISSION_SCORE_DIFF_MAX_BONUS
+EMISSION_SCORE_DIFF_MAX_MULTIPLIER = INTERNAL_CONFIG.EMISSION_SCORE_DIFF_MAX_MULTIPLIER
+
+# Consensus Engine Configuration
+CONSENSUS_MIN_RESPONSES_FOR_SYBIL = INTERNAL_CONFIG.CONSENSUS_MIN_RESPONSES_FOR_SYBIL
+CONSENSUS_MIN_RESPONSES_FOR_HEATMAP = INTERNAL_CONFIG.CONSENSUS_MIN_RESPONSES_FOR_HEATMAP
+CONSENSUS_MIN_RESPONSES_FOR_OUTLIER_DETECTION = INTERNAL_CONFIG.CONSENSUS_MIN_RESPONSES_FOR_OUTLIER_DETECTION
+CONSENSUS_MIN_RESPONSES_FOR_CLUSTERING = INTERNAL_CONFIG.CONSENSUS_MIN_RESPONSES_FOR_CLUSTERING
+CONSENSUS_USE_WEIGHTED_SCORING = INTERNAL_CONFIG.CONSENSUS_USE_WEIGHTED_SCORING
+CONSENSUS_APPLY_QUALITY_FILTER = INTERNAL_CONFIG.CONSENSUS_APPLY_QUALITY_FILTER
+CONSENSUS_QUALITY_SENSITIVITY = INTERNAL_CONFIG.CONSENSUS_QUALITY_SENSITIVITY
+CONSENSUS_LAMBDA_FACTOR = INTERNAL_CONFIG.CONSENSUS_LAMBDA_FACTOR
+CONSENSUS_THRESHOLD_MIN = INTERNAL_CONFIG.CONSENSUS_THRESHOLD_MIN
+CONSENSUS_ENABLE_SEMANTIC_QUALITY = INTERNAL_CONFIG.CONSENSUS_ENABLE_SEMANTIC_QUALITY
+CONSENSUS_QUALITY_THRESHOLD = INTERNAL_CONFIG.CONSENSUS_QUALITY_THRESHOLD
+CONSENSUS_QUALITY_PROMPT_RELEVANCE_WEIGHT = INTERNAL_CONFIG.CONSENSUS_QUALITY_PROMPT_RELEVANCE_WEIGHT
+CONSENSUS_QUALITY_DENSITY_WEIGHT = INTERNAL_CONFIG.CONSENSUS_QUALITY_DENSITY_WEIGHT
+CONSENSUS_QUALITY_SPECIFICITY_WEIGHT = INTERNAL_CONFIG.CONSENSUS_QUALITY_SPECIFICITY_WEIGHT
+CONSENSUS_QUALITY_COHERENCE_WEIGHT = INTERNAL_CONFIG.CONSENSUS_QUALITY_COHERENCE_WEIGHT
+CONSENSUS_ENABLE_SMART_OUTLIER_DETECTION = INTERNAL_CONFIG.CONSENSUS_ENABLE_SMART_OUTLIER_DETECTION
+CONSENSUS_OUTLIER_QUALITY_DELTA = INTERNAL_CONFIG.CONSENSUS_OUTLIER_QUALITY_DELTA
+CONSENSUS_ENABLE_DIVERSITY_BONUS = INTERNAL_CONFIG.CONSENSUS_ENABLE_DIVERSITY_BONUS
+CONSENSUS_MAX_DIVERSITY_BONUS = INTERNAL_CONFIG.CONSENSUS_MAX_DIVERSITY_BONUS
+CONSENSUS_ENABLE_GARBAGE_ALERTS = INTERNAL_CONFIG.CONSENSUS_ENABLE_GARBAGE_ALERTS
+CONSENSUS_GARBAGE_CLUSTER_THRESHOLD = INTERNAL_CONFIG.CONSENSUS_GARBAGE_CLUSTER_THRESHOLD

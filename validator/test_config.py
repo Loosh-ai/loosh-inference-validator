@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from validator.config import get_validator_config
 from validator.config.shared_config import get_validator_config as get_validator_config_from_shared
+from validator.internal_config import DENDRITE_TIMEOUT, DENDRITE_MAX_RETRY, DENDRITE_RETRY_DELAY
 
 
 def load_test_config_yaml(config_path: str = "test_config.yaml") -> Dict[str, Any]:
@@ -80,9 +81,9 @@ def create_bittensor_test_config(yaml_config: Optional[Dict[str, Any]] = None) -
     # Set dendrite configuration
     dendrite_config = yaml_config.get('dendrite', {})
     config.dendrite = bt.config()
-    config.dendrite.timeout = dendrite_config.get('timeout', 30)
-    config.dendrite.max_retry = dendrite_config.get('max_retry', 2)
-    config.dendrite.retry_delay = dendrite_config.get('retry_delay', 0.5)
+    config.dendrite.timeout = dendrite_config.get('timeout', DENDRITE_TIMEOUT)
+    config.dendrite.max_retry = dendrite_config.get('max_retry', DENDRITE_MAX_RETRY)
+    config.dendrite.retry_delay = dendrite_config.get('retry_delay', DENDRITE_RETRY_DELAY)
     
     # Set logging configuration
     logging_config = yaml_config.get('logging', {})

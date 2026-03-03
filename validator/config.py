@@ -189,6 +189,7 @@ def validator_config_to_bittensor_config(validator_config: ValidatorConfig) -> "
         bittensor.config: Properly configured bittensor config object
     """
     import bittensor as bt
+    from validator.internal_config import DENDRITE_TIMEOUT, DENDRITE_MAX_RETRY, DENDRITE_RETRY_DELAY
     
     # Create base bittensor config
     config = bt.config()
@@ -225,9 +226,9 @@ def validator_config_to_bittensor_config(validator_config: ValidatorConfig) -> "
     
     # Set dendrite configuration defaults
     config.dendrite = bt.config()
-    config.dendrite.timeout = 30
-    config.dendrite.max_retry = 2
-    config.dendrite.retry_delay = 0.5
+    config.dendrite.timeout = DENDRITE_TIMEOUT
+    config.dendrite.max_retry = DENDRITE_MAX_RETRY
+    config.dendrite.retry_delay = DENDRITE_RETRY_DELAY
     
     # Set logging configuration
     config.log_level = validator_config.log_level

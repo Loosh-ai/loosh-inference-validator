@@ -60,8 +60,47 @@ from validator.internal_config import (
     SYBIL_FUSION_STRUCTURE_THRESHOLD,
     SYBIL_TRAJECTORY_THRESHOLD,
     SYBIL_TRAJECTORY_N_CLUSTERS,
+    # Prompt-relevance hard gates
+    QUALITY_MIN_RAW_PROMPT_RELEVANCE,
+    QUALITY_SINGLE_MINER_MIN_RELEVANCE,
+    # Narrative LLM
+    NARRATIVE_LLM_TEMPERATURE,
+    NARRATIVE_LLM_MAX_TOKENS,
+    # Sybil detection
+    SYBIL_MIN_GROUP_SIZE,
+    SYBIL_STORAGE_TEXT_MAX_LENGTH,
+    # Emission calculation
+    EMISSION_CONSENSUS_BONUS,
+    EMISSION_SCORE_DIFF_SCALE_FACTOR,
+    EMISSION_SCORE_DIFF_MAX_BONUS,
+    EMISSION_SCORE_DIFF_MAX_MULTIPLIER,
+    # Fiber MLTS
+    FIBER_KEY_TTL_SECONDS,
+    FIBER_HANDSHAKE_TIMEOUT_SECONDS,
     # Migration
     FALLBACK_MODEL,
+    # Consensus Engine Configuration
+    CONSENSUS_MIN_RESPONSES_FOR_SYBIL,
+    CONSENSUS_MIN_RESPONSES_FOR_HEATMAP,
+    CONSENSUS_MIN_RESPONSES_FOR_OUTLIER_DETECTION,
+    CONSENSUS_MIN_RESPONSES_FOR_CLUSTERING,
+    CONSENSUS_USE_WEIGHTED_SCORING,
+    CONSENSUS_APPLY_QUALITY_FILTER,
+    CONSENSUS_QUALITY_SENSITIVITY,
+    CONSENSUS_LAMBDA_FACTOR,
+    CONSENSUS_THRESHOLD_MIN,
+    CONSENSUS_ENABLE_SEMANTIC_QUALITY,
+    CONSENSUS_QUALITY_THRESHOLD,
+    CONSENSUS_QUALITY_PROMPT_RELEVANCE_WEIGHT,
+    CONSENSUS_QUALITY_DENSITY_WEIGHT,
+    CONSENSUS_QUALITY_SPECIFICITY_WEIGHT,
+    CONSENSUS_QUALITY_COHERENCE_WEIGHT,
+    CONSENSUS_ENABLE_SMART_OUTLIER_DETECTION,
+    CONSENSUS_OUTLIER_QUALITY_DELTA,
+    CONSENSUS_ENABLE_DIVERSITY_BONUS,
+    CONSENSUS_MAX_DIVERSITY_BONUS,
+    CONSENSUS_ENABLE_GARBAGE_ALERTS,
+    CONSENSUS_GARBAGE_CLUSTER_THRESHOLD,
 )
 from validator.network.fiber_client import ValidatorFiberClient
 
@@ -218,8 +257,8 @@ class InferenceValidator:
                 LLMConfig(
                     api_url=self.config.llm_api_url,  # Must implement OpenAI Chat Completions API format
                     model_name=self.config.llm_model,  # Can be any model (Llama, Qwen, Mistral, etc.)
-                    temperature=0.7,
-                    max_tokens=800,
+                    temperature=NARRATIVE_LLM_TEMPERATURE,
+                    max_tokens=NARRATIVE_LLM_MAX_TOKENS,
                     api_key=api_key
                 )
             )
@@ -234,7 +273,7 @@ class InferenceValidator:
             high_similarity_percentile=SYBIL_HIGH_SIMILARITY_PERCENTILE,
             very_high_similarity_percentile=SYBIL_VERY_HIGH_SIMILARITY_PERCENTILE,
             min_response_length=SYBIL_MIN_RESPONSE_LENGTH,
-            min_group_size=2,
+            min_group_size=SYBIL_MIN_GROUP_SIZE,
             min_internal_similarity=SYBIL_MIN_INTERNAL_SIMILARITY,
             fusion_semantic_threshold=SYBIL_FUSION_SEMANTIC_THRESHOLD,
             fusion_lexical_threshold=SYBIL_FUSION_LEXICAL_THRESHOLD,
@@ -436,9 +475,39 @@ class InferenceValidator:
             num_valid = len(valid_responses)
             
             if num_valid == 1:
-                logger.info(f"[EVALUATION] Only 1 valid response received - using simple scoring (no consensus evaluation possible)")
-                # For single response, return a default score — keyed by hotkey
+                logger.info(f"[EVALUATION] Only 1 valid response received - evaluating response quality")
                 single_key = valid_miner_hotkeys[0]
+
+                single_response_text = valid_responses[0].response_text
+                prompt_emb = self._embed_batch([prompt])[0]          # shape (D,)
+                resp_emb   = self._embed_batch([single_response_text])  # shape (1, D)
+
+                from sklearn.metrics.pairwise import cosine_similarity as _cos_sim
+                raw_relevance = float(_cos_sim([prompt_emb], resp_emb)[0][0])
+                logger.debug(
+                    f"[EVALUATION] Single-miner relevance score: {raw_relevance:.3f} "
+                    f"(miner={single_key[:16]}...)"
+                )
+
+                if raw_relevance < QUALITY_SINGLE_MINER_MIN_RELEVANCE:
+                    logger.warning(
+                        f"[EVALUATION] Single-miner response did not meet quality threshold. "
+                        f"Miner: {single_key[:16]}..."
+                    )
+                    emissions = {single_key: 0.0}
+                    for test_miner_key in test_mode_miners:
+                        emissions[test_miner_key] = 0.0
+
+                    self.db_manager.log_evaluation_result(
+                        challenge_id=challenge_id,
+                        consensus_score=0.0,
+                        heatmap_path=None,
+                        narrative=None,
+                        emissions=emissions
+                    )
+                    return 0.0, None, None, emissions
+
+                # Response passed quality evaluation — award full emission.
                 emissions = {single_key: 1.0}
                 
                 # Add zero emissions for test mode miners (already keyed by hotkey/fallback)
@@ -462,7 +531,7 @@ class InferenceValidator:
             response_texts = [r.response_text for r in valid_responses]
             embeddings = self._embed_batch(response_texts, batch_size=EMBEDDING_BATCH_SIZE_DOC)
             
-            # CRITICAL: Generate prompt embedding for semantic quality assessment
+            # Generate prompt embedding for semantic quality assessment
             prompt_embedding = self._embed_batch([prompt])[0]
             
             logger.debug(f"[EVALUATION] Generated embeddings: shape={embeddings.shape}")
@@ -525,23 +594,20 @@ class InferenceValidator:
             # Disable outlier detection and clustering if we have too few responses
             # LOF requires at least n_neighbors + 1 samples (minimum 3)
             # Clustering also needs at least 2 samples
-            min_responses_for_outlier_detection = 3
-            min_responses_for_clustering = 2
-            
-            use_outlier_detection = num_valid >= min_responses_for_outlier_detection
-            use_clustering = num_valid >= min_responses_for_clustering
+            use_outlier_detection = num_valid >= CONSENSUS_MIN_RESPONSES_FOR_OUTLIER_DETECTION
+            use_clustering = num_valid >= CONSENSUS_MIN_RESPONSES_FOR_CLUSTERING
             # Check config option and minimum response count
-            generate_heatmap = ENABLE_HEATMAP_GENERATION and num_valid >= 2  # Need at least 2 for meaningful heatmap
+            generate_heatmap = ENABLE_HEATMAP_GENERATION and num_valid >= CONSENSUS_MIN_RESPONSES_FOR_HEATMAP
             
             if not use_outlier_detection:
-                logger.debug(f"[EVALUATION] Outlier detection disabled (need {min_responses_for_outlier_detection}+ responses, got {num_valid})")
+                logger.debug(f"[EVALUATION] Outlier detection disabled (need {CONSENSUS_MIN_RESPONSES_FOR_OUTLIER_DETECTION}+ responses, got {num_valid})")
             if not use_clustering:
-                logger.debug(f"[EVALUATION] Clustering disabled (need {min_responses_for_clustering}+ responses, got {num_valid})")
+                logger.debug(f"[EVALUATION] Clustering disabled (need {CONSENSUS_MIN_RESPONSES_FOR_CLUSTERING}+ responses, got {num_valid})")
             if not generate_heatmap:
                 if not ENABLE_HEATMAP_GENERATION:
                     logger.debug(f"[EVALUATION] Heatmap generation disabled by configuration")
                 else:
-                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need 2+ responses, got {num_valid})")
+                    logger.debug(f"[EVALUATION] Heatmap generation disabled (need {CONSENSUS_MIN_RESPONSES_FOR_HEATMAP}+ responses, got {num_valid})")
             
             # Use challenge_id (UUID) for heatmap filename, but include correlation_id in image title
             # challenge_id should be a UUID string, sanitize it for filename
@@ -552,33 +618,30 @@ class InferenceValidator:
             
             config = ConsensusConfig(
                 use_clustering=use_clustering,
-                use_weighted_scoring=True,
+                use_weighted_scoring=CONSENSUS_USE_WEIGHTED_SCORING,
                 use_outlier_detection=use_outlier_detection,
-                apply_quality_filter=False,  # Disable legacy word-length filter
-                quality_sensitivity=0.7,  # Deprecated - kept for backward compat
+                apply_quality_filter=CONSENSUS_APPLY_QUALITY_FILTER,
+                quality_sensitivity=CONSENSUS_QUALITY_SENSITIVITY,
                 generate_heatmap=generate_heatmap,
                 generate_quality_plot=ENABLE_QUALITY_PLOTS,
                 heatmap_path=f"temp/heatmap_{heatmap_id_safe}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png",
-                lambda_factor=1.0,
-                threshold_min=0.7,
+                lambda_factor=CONSENSUS_LAMBDA_FACTOR,
+                threshold_min=CONSENSUS_THRESHOLD_MIN,
                 challenge_id=str(challenge_id),  # Pass challenge_id (UUID) for image title
                 correlation_id=correlation_id,  # Pass correlation_id for image title
-                # NEW: Semantic quality assessment (CRITICAL for garbage consensus prevention)
-                enable_semantic_quality=True,  # Enable semantic quality assessment
-                quality_threshold=0.35,  # Minimum quality score to participate in consensus
-                quality_prompt_relevance_weight=0.4,
-                quality_density_weight=0.2,
-                quality_specificity_weight=0.2,
-                quality_coherence_weight=0.2,
-                # Smart outlier detection
-                enable_smart_outlier_detection=True,
-                outlier_quality_delta=0.15,
-                # Diversity bonus
-                enable_diversity_bonus=True,
-                max_diversity_bonus=0.15,
-                # Garbage detection alerts
-                enable_garbage_alerts=True,
-                garbage_cluster_threshold=0.4
+                enable_semantic_quality=CONSENSUS_ENABLE_SEMANTIC_QUALITY,
+                quality_threshold=CONSENSUS_QUALITY_THRESHOLD,
+                quality_prompt_relevance_weight=CONSENSUS_QUALITY_PROMPT_RELEVANCE_WEIGHT,
+                quality_density_weight=CONSENSUS_QUALITY_DENSITY_WEIGHT,
+                quality_specificity_weight=CONSENSUS_QUALITY_SPECIFICITY_WEIGHT,
+                quality_coherence_weight=CONSENSUS_QUALITY_COHERENCE_WEIGHT,
+                min_raw_prompt_relevance=QUALITY_MIN_RAW_PROMPT_RELEVANCE,
+                enable_smart_outlier_detection=CONSENSUS_ENABLE_SMART_OUTLIER_DETECTION,
+                outlier_quality_delta=CONSENSUS_OUTLIER_QUALITY_DELTA,
+                enable_diversity_bonus=CONSENSUS_ENABLE_DIVERSITY_BONUS,
+                max_diversity_bonus=CONSENSUS_MAX_DIVERSITY_BONUS,
+                enable_garbage_alerts=CONSENSUS_ENABLE_GARBAGE_ALERTS,
+                garbage_cluster_threshold=CONSENSUS_GARBAGE_CLUSTER_THRESHOLD,
             )
             
             # Compute similarity matrix BEFORE consensus evaluation (before filtering)
@@ -587,16 +650,11 @@ class InferenceValidator:
             
             # Evaluate consensus (this may filter responses)
             result = consensus_engine.evaluate_consensus(config)
-            
-            # Perform sybil detection analysis on valid responses only
-            # Only run sybil detection if we have at least 2 valid responses
-            # NOTE: Sybil detection uses HOTKEYS as miner identifiers (not UIDs)
-            # for UID compression safety. Hotkeys are persistent SS58 addresses.
+
+            # Only run sybil detection if we have enough valid responses
             sybil_result = None
-            if num_valid >= 2:
+            if num_valid >= CONSENSUS_MIN_RESPONSES_FOR_SYBIL:
                 try:
-                    # Use hotkeys for sybil detection (persistent identifier)
-                    # Fallback to str(uid) if hotkeys not available, then str(index)
                     sybil_miner_ids = (
                         valid_miner_hotkeys if valid_miner_hotkeys
                         else [str(uid) for uid in valid_miner_ids] if valid_miner_ids
@@ -614,7 +672,7 @@ class InferenceValidator:
                     logger.warning(f"[EVALUATION] Sybil detection failed: {e}. Continuing without sybil detection.")
                     sybil_result = None
             else:
-                logger.debug(f"[EVALUATION] Sybil detection skipped (need 2+ responses, got {num_valid})")
+                logger.debug(f"[EVALUATION] Sybil detection skipped (need {CONSENSUS_MIN_RESPONSES_FOR_SYBIL}+ responses, got {num_valid})")
             
             # Log sybil detection results for analysis
             if sybil_result and (sybil_result.suspicious_pairs or sybil_result.suspicious_groups):
@@ -626,8 +684,8 @@ class InferenceValidator:
                         "miner_hotkey_1": pair.miner_hotkey_1,
                         "miner_hotkey_2": pair.miner_hotkey_2,
                         "similarity_score": pair.similarity_score,
-                        "response_text_1": pair.response_text_1[:500],  # Truncate for storage
-                        "response_text_2": pair.response_text_2[:500],
+                        "response_text_1": pair.response_text_1[:SYBIL_STORAGE_TEXT_MAX_LENGTH],
+                        "response_text_2": pair.response_text_2[:SYBIL_STORAGE_TEXT_MAX_LENGTH],
                         "detection_method": pair.detection_method,
                     }
                     for pair in sybil_result.suspicious_pairs
@@ -641,7 +699,7 @@ class InferenceValidator:
                         "max_similarity": group.max_similarity,
                         "min_internal_similarity": group.min_internal_similarity,
                         "response_texts": {
-                            str(mid): text[:500]  # Truncate for storage
+                            str(mid): text[:SYBIL_STORAGE_TEXT_MAX_LENGTH]
                             for mid, text in group.response_texts.items()
                         }
                     }
@@ -763,15 +821,15 @@ class InferenceValidator:
         if score_difference <= 0:
             return highest_label, 1.0
         
-        # Scale the bonus based on absolute difference
-        # Use tanh to map differences to [0, 1] range, then scale to [1.0, 1.5]
-        # Scale factor controls sensitivity: lower = more sensitive, higher = less sensitive
-        # With scale_factor=0.1: diff of 1 point gives ~1.05x, diff of 10 gives ~1.24x, diff of 20 gives ~1.38x
-        scale_factor = 0.1
-        bonus_multiplier = 1.0 + 0.5 * math.tanh(score_difference * scale_factor)
-        
-        # Ensure we don't exceed 1.5x
-        bonus_multiplier = min(bonus_multiplier, 1.5)
+        # Scale the bonus based on absolute difference.
+        # Use tanh to map differences to [0, 1] range, then scale to
+        # [1.0, 1.0 + EMISSION_SCORE_DIFF_MAX_BONUS].
+        bonus_multiplier = 1.0 + EMISSION_SCORE_DIFF_MAX_BONUS * math.tanh(
+            score_difference * EMISSION_SCORE_DIFF_SCALE_FACTOR
+        )
+
+        # Hard cap
+        bonus_multiplier = min(bonus_multiplier, EMISSION_SCORE_DIFF_MAX_MULTIPLIER)
         
         return highest_label, bonus_multiplier
     
@@ -834,7 +892,7 @@ class InferenceValidator:
             # Convert to float to avoid numpy float32 issues with JSON serialization
             emission = float(time_ratio * result.similarity_score)
             if in_consensus:
-                emission *= 1.2  # Bonus for being in consensus
+                emission *= EMISSION_CONSENSUS_BONUS
             
             # Scaled bonus for highest scoring response based on score difference
             if highest_scoring_label and response_label == highest_scoring_label:
@@ -954,8 +1012,8 @@ class InferenceValidator:
             if cache_key not in _heatmap_fiber_client_cache:
                 _heatmap_fiber_client_cache[cache_key] = ValidatorFiberClient(
                     validator_hotkey_ss58=validator_hotkey,
-                    key_ttl_seconds=3600,
-                    handshake_timeout_seconds=30
+                    key_ttl_seconds=FIBER_KEY_TTL_SECONDS,
+                    handshake_timeout_seconds=FIBER_HANDSHAKE_TIMEOUT_SECONDS,
                 )
             
             fiber_client = _heatmap_fiber_client_cache[cache_key]

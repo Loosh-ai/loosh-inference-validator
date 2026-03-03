@@ -1,6 +1,7 @@
 # VALIDATOR MAIN
 
 import asyncio
+import json
 import sys
 import time
 import random
@@ -40,7 +41,22 @@ from pathlib import Path
 from datetime import timedelta
 
 from validator.config import get_validator_config
-from validator.internal_config import INTERNAL_CONFIG
+from validator.internal_config import (
+    INTERNAL_CONFIG,
+    METAGRAPH_REFRESH_ERROR_RETRY_SECONDS,
+    WEIGHTS_MAX_CONSECUTIVE_FAILURES,
+    WEIGHTS_INITIAL_DELAY_MAX_SECONDS,
+    DB_CLEANUP_INTERVAL_HOURS,
+    DB_CLEANUP_RETENTION_HOURS,
+    DB_CLEANUP_ERROR_RETRY_SECONDS,
+    CHALLENGE_QUEUE_GET_TIMEOUT,
+    CHALLENGE_QUEUE_POLL_INTERVAL,
+    CHALLENGE_CONSUMER_ERROR_DELAY,
+    CHALLENGE_PENDING_NODE_MAX_WAIT_SECONDS,
+    CHALLENGE_PENDING_NODE_POLL_INTERVAL,
+    CHALLENGE_PENDING_PROCESSOR_LOOP_DELAY,
+    CHALLENGE_PENDING_PROCESSOR_ERROR_DELAY,
+)
 
 
 def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) -> ChallengeAPIResponse:
@@ -374,7 +390,7 @@ async def main_loop():
                 break
             except Exception as e:
                 logger.error(f"Error in metagraph refresh loop: {e}", exc_info=True)
-                await asyncio.sleep(60)  # Wait a bit before retrying on error
+                await asyncio.sleep(METAGRAPH_REFRESH_ERROR_RETRY_SECONDS)
     
     metagraph_refresh_task = asyncio.create_task(refresh_metagraph_loop())
     logger.info(f"Metagraph refresh task started (will refresh every {metagraph_refresh_interval}s)")
@@ -388,11 +404,11 @@ async def main_loop():
         
         logger.info(f"Starting weights update loop (interval: {WEIGHTS_INTERVAL_SECONDS}s = {WEIGHTS_INTERVAL_SECONDS/60:.1f}min)")
         consecutive_failures = 0
-        max_consecutive_failures = 3
-        
+        max_consecutive_failures = WEIGHTS_MAX_CONSECUTIVE_FAILURES
+
         # Wait for initial period before first weight setting
         # This allows time for some evaluations to complete
-        initial_delay = min(WEIGHTS_INTERVAL_SECONDS, 300)  # Max 5 min initial delay
+        initial_delay = min(WEIGHTS_INTERVAL_SECONDS, WEIGHTS_INITIAL_DELAY_MAX_SECONDS)
         logger.info(f"Weights update loop will start after {initial_delay}s initial delay")
         await asyncio.sleep(initial_delay)
         
@@ -429,19 +445,19 @@ async def main_loop():
     
     # Background task for database cleanup
     cleanup_task = None
-    cleanup_interval_hours = 24  # Run once per day
-    retention_hours = 48  # Keep 2x the EMA lookback (24h) for safety
-    
     async def cleanup_loop():
         """Run periodic database cleanup to prevent unbounded growth."""
-        logger.info(f"Starting database cleanup loop (interval: {cleanup_interval_hours}h, retention: {retention_hours}h)")
-        
+        logger.info(
+            f"Starting database cleanup loop "
+            f"(interval: {DB_CLEANUP_INTERVAL_HOURS}h, retention: {DB_CLEANUP_RETENTION_HOURS}h)"
+        )
+
         while True:
             try:
                 # Wait for cleanup interval
-                await asyncio.sleep(cleanup_interval_hours * 3600)
+                await asyncio.sleep(DB_CLEANUP_INTERVAL_HOURS * 3600)
                 logger.info("Running periodic database cleanup...")
-                db_manager.cleanup_old_data(retention_hours=retention_hours)
+                db_manager.cleanup_old_data(retention_hours=DB_CLEANUP_RETENTION_HOURS)
                 logger.info("Database cleanup completed successfully")
             except asyncio.CancelledError:
                 logger.info("Database cleanup loop cancelled")
@@ -449,7 +465,7 @@ async def main_loop():
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}", exc_info=True)
                 # Continue running even if cleanup fails
-                await asyncio.sleep(3600)  # Wait 1 hour before retry
+                await asyncio.sleep(DB_CLEANUP_ERROR_RETRY_SECONDS)
     
     cleanup_task = asyncio.create_task(cleanup_loop())
     logger.info("Database cleanup task started")
@@ -498,9 +514,26 @@ async def main_loop():
                         default_model = INTERNAL_CONFIG.DEFAULT_MODEL
                         challenge_id = challenge_data.id
                         prompt = challenge_data.prompt
-                        
+
                         # Extract OpenAI-compatible fields (messages, tools, tool_choice)
                         messages = getattr(challenge_data, 'messages', None)
+
+                        # For message-based challenges, extract the last user turn as the
+                        # prompt reference used by the evaluation pipeline.
+                        if not prompt and messages:
+                            try:
+                                msgs = messages if isinstance(messages, list) else json.loads(messages)
+                                user_turns = [
+                                    m.get("content", "")
+                                    for m in msgs
+                                    if isinstance(m, dict) and m.get("role") == "user"
+                                ]
+                                if user_turns:
+                                    prompt = user_turns[-1]
+                            except Exception as exc:
+                                logger.warning(
+                                    f"[EVALUATION] Could not extract prompt from messages: {exc}"
+                                )
                         tools = getattr(challenge_data, 'tools', None)
                         tool_choice = getattr(challenge_data, 'tool_choice', None)
                         
@@ -592,12 +625,11 @@ async def main_loop():
                             )
                             # Queue challenge and wait for nodes to become available
                             await pending_challenges_queue.put(challenge_data)
-                            
-                            # Wait for nodes to become available (check every 2 seconds)
-                            max_wait_time = 300  # 5 minutes max wait
+
+                            # Wait for nodes to become available
                             wait_start = time.time()
-                            while (time.time() - wait_start) < max_wait_time:
-                                await asyncio.sleep(2.0)  # Check every 2 seconds
+                            while (time.time() - wait_start) < CHALLENGE_PENDING_NODE_MAX_WAIT_SECONDS:
+                                await asyncio.sleep(CHALLENGE_PENDING_NODE_POLL_INTERVAL)
                                 
                                 # Check again for available nodes
                                 current_available_nodes = get_available_nodes_cached()
@@ -626,7 +658,7 @@ async def main_loop():
                             if not filtered_nodes:
                                 logger.warning(
                                     f"Still no available nodes for challenge {challenge_id[:8]}... "
-                                    f"after waiting {max_wait_time}s. Will retry processing anyway."
+                                    f"after waiting {CHALLENGE_PENDING_NODE_MAX_WAIT_SECONDS}s. Will retry processing anyway."
                                 )
                                 # Don't return - continue to try processing (may fail gracefully)
                                 # This ensures challenges are never permanently skipped
@@ -809,10 +841,10 @@ async def main_loop():
                                 await pending_challenges_queue.put(pending_challenge)
                             
                             # Small delay to prevent tight loop
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(CHALLENGE_PENDING_PROCESSOR_LOOP_DELAY)
                         except Exception as e:
                             logger.error(f"Error in pending challenges processor: {e}", exc_info=True)
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(CHALLENGE_PENDING_PROCESSOR_ERROR_DELAY)
                 
                 # Start pending challenges processor
                 pending_task = asyncio.create_task(process_pending_challenges())
@@ -821,7 +853,7 @@ async def main_loop():
                     try:
                         # Only use queue-based consumption (push mode)
                         # Challenges are received via Fiber-encrypted POST to /fiber/challenge endpoint
-                        challenge_from_queue = await get_next_challenge_from_queue(timeout=1.0)
+                        challenge_from_queue = await get_next_challenge_from_queue(timeout=CHALLENGE_QUEUE_GET_TIMEOUT)
                         
                         if challenge_from_queue:
                             # Convert ChallengeCreate to ChallengeAPIResponse format
@@ -840,8 +872,8 @@ async def main_loop():
                             if active_tasks:
                                 logger.debug(f"No new challenges, but {len(active_tasks)} challenge(s) still processing...")
                             # Sleep briefly before checking again
-                            await asyncio.sleep(1.0)
-                            
+                            await asyncio.sleep(CHALLENGE_QUEUE_POLL_INTERVAL)
+
                     except KeyboardInterrupt:
                         # Cancel pending challenges processor
                         pending_task.cancel()
@@ -857,7 +889,7 @@ async def main_loop():
                         break
                     except Exception as e:
                         logger.error(f"Error in challenge consumer loop: {str(e)}")
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(CHALLENGE_CONSUMER_ERROR_DELAY)
             
             # Start challenge consumer loop
             await challenge_consumer_loop()

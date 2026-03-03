@@ -437,9 +437,19 @@ async def process_challenge_results(
             f"emissions={len(emissions)} miners"
         )
         
-        # Find the best response (highest emission score)
-        # NOTE: emissions dict is now keyed by hotkey (persistent SS58 address)
-        best_miner_id = max(emissions.items(), key=lambda x: x[1])[0] if emissions else miner_hotkeys[0]
+        # Find the best response (highest emission score).
+        # NOTE: emissions dict is keyed by hotkey (persistent SS58 address).
+        # If all emission scores are 0.0, best_miner_id is set to None and
+        # no response will be forwarded to the gateway.
+        best_emission = max(emissions.values()) if emissions else 0.0
+        if best_emission <= 0.0:
+            best_miner_id = None
+            logger.warning(
+                f"[EVALUATION] All {len(emissions)} miner(s) received zero emissions for "
+                f"challenge {challenge_id or 'unknown'} — no response will be forwarded to gateway."
+            )
+        else:
+            best_miner_id = max(emissions.items(), key=lambda x: x[1])[0] if emissions else miner_hotkeys[0]
         
         # Get challenge_id UUID for submission
         challenge_id_uuid = collected_responses[0][0].challenge_orig.id if hasattr(collected_responses[0][0].challenge_orig, 'id') else challenge_id

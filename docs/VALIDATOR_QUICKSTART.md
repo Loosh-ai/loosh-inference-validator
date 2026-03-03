@@ -244,7 +244,7 @@ API_HOST=0.0.0.0
 API_PORT=8000
 
 # Challenge API Configuration
-CHALLENGE_API_BASE_URL=https://challenge-api.loosh.ai  # or challenge-test.loosh.ai for testnet
+CHALLENGE_API_BASE_URL=https://challenge.loosh.ai  # or challenge-test.loosh.ai for testnet
 CHALLENGE_API_KEY=your-api-key-here
 
 # IMPORTANT: Disable narrative generation for production
@@ -950,7 +950,7 @@ btcli wallet overview \
 4. **Challenge API URL misconfigured:**
    ```bash
    # Verify in .env
-   CHALLENGE_API_BASE_URL=https://challenge-api.loosh.ai  # for mainnet
+   CHALLENGE_API_BASE_URL=https://challenge.loosh.ai  # for mainnet
    # or
    CHALLENGE_API_BASE_URL=https://challenge-test.loosh.ai  # for testnet
    ```
@@ -1036,13 +1036,13 @@ Connection timeout
 
 ```bash
 # Test connectivity
-curl https://challenge-api.loosh.ai/healthz
+curl https://challenge.loosh.ai/healthz
 
 # Verify API key is set
 grep CHALLENGE_API_KEY .env
 
 # Check network connectivity
-ping challenge-api.loosh.ai
+ping challenge.loosh.ai
 
 # Verify Fiber MLTS handshake
 curl http://localhost:8000/fiber/stats

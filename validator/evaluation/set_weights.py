@@ -46,6 +46,7 @@ from validator.internal_config import (
     SYBIL_PENALTY_MIN_RETENTION,
     SYBIL_PENALTY_THRESHOLD,
     SYBIL_SAFETY_MAX_PENALIZED_FRACTION,
+    SYBIL_HARD_PENALTY_SCORE_FLOOR,
     SYBIL_SCORE_CACHE_TTL_SECONDS,
 )
 
@@ -338,12 +339,17 @@ def _apply_sybil_penalty(
         penalized_ema = ema_score * (1 - penalty)
         penalized_ema = max(penalized_ema, ema_score * SYBIL_PENALTY_MIN_RETENTION)  (grace floor)
 
-    Safety valve with **fallback-K restoration**:
-        If more than ``SYBIL_SAFETY_MAX_PENALIZED_FRACTION`` of serving miners
-        would be penalized, we do NOT skip penalties entirely.  Instead we
-        penalize only the **top-K worst offenders** (sorted by descending
-        sybil_score, K = max_allowed).  This prevents sybils from gaming the
-        system by mass-flooding detections to trigger a blanket skip.
+    Two-tier safety valve (Option A: score-band bypass):
+
+        HARD tier  (sybil_score >= SYBIL_HARD_PENALTY_SCORE_FLOOR):
+            Always penalized — the safety valve does NOT apply.  High-confidence
+            detections can never hide behind a crowded lower tier.
+
+        SOFT tier  (SYBIL_PENALTY_THRESHOLD <= sybil_score < SYBIL_HARD_PENALTY_SCORE_FLOOR):
+            Subject to fallback-K: if more than SYBIL_SAFETY_MAX_PENALIZED_FRACTION
+            of serving miners fall in this tier, only the worst-K are penalized.
+            This preserves the safety valve's original purpose (protecting against
+            detector miscalibration) without shielding confirmed sybils.
 
     Args:
         miner_ema_scores: EMA scores keyed by hotkey (not mutated)
@@ -352,8 +358,8 @@ def _apply_sybil_penalty(
 
     Returns:
         (updated_scores, penalized_count, safety_triggered)
-        ``safety_triggered`` is True when fallback-K was used (some miners
-        were spared that otherwise would have been penalized).
+        ``safety_triggered`` is True when fallback-K was used on the soft tier
+        (some soft-tier miners were spared that otherwise would have been penalized).
     """
     if not SYBIL_PENALTY_ENABLED:
         return miner_ema_scores, 0, False
@@ -361,32 +367,44 @@ def _apply_sybil_penalty(
     if not sybil_scores:
         return miner_ema_scores, 0, False
 
-    # Identify candidates: miners above threshold with non-zero EMA
-    candidates = [
+    # Identify all candidates: miners above threshold with non-zero EMA
+    all_candidates = [
         (hk, sybil_scores[hk])
         for hk in miner_ema_scores
         if sybil_scores.get(hk, 0.0) >= SYBIL_PENALTY_THRESHOLD
         and miner_ema_scores[hk] > 0
     ]
 
-    max_allowed = max(1, int(serving_miners_count * SYBIL_SAFETY_MAX_PENALIZED_FRACTION))
-    safety_triggered = len(candidates) > max_allowed
+    # Split into hard tier (bypass safety valve) and soft tier (subject to cap)
+    hard_candidates = [(hk, s) for hk, s in all_candidates if s >= SYBIL_HARD_PENALTY_SCORE_FLOOR]
+    soft_candidates  = [(hk, s) for hk, s in all_candidates if s <  SYBIL_HARD_PENALTY_SCORE_FLOOR]
+
+    # Safety valve applies only to the soft tier
+    max_soft_allowed = max(1, int(serving_miners_count * SYBIL_SAFETY_MAX_PENALIZED_FRACTION))
+    safety_triggered = len(soft_candidates) > max_soft_allowed
 
     if safety_triggered:
-        # Fallback-K: sort by descending sybil_score, keep only worst K
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        spared = len(candidates) - max_allowed
-        candidates = candidates[:max_allowed]
+        # Fallback-K: sort soft tier by descending sybil_score, keep only worst K
+        soft_candidates.sort(key=lambda x: x[1], reverse=True)
+        spared = len(soft_candidates) - max_soft_allowed
+        soft_candidates = soft_candidates[:max_soft_allowed]
         logger.critical(
-            f"[sybil] SAFETY VALVE (fallback-K): {len(candidates) + spared} miners "
-            f"would be penalized, limit is {max_allowed} "
-            f"({SYBIL_SAFETY_MAX_PENALIZED_FRACTION*100:.0f}% of "
-            f"{serving_miners_count} serving). Penalizing top-{max_allowed} worst "
-            f"offenders, sparing {spared} lower-score miners."
+            f"[sybil] SAFETY VALVE (fallback-K): {len(soft_candidates) + spared} soft-tier miners "
+            f"(score < {SYBIL_HARD_PENALTY_SCORE_FLOOR}) would be penalized, limit is {max_soft_allowed} "
+            f"({SYBIL_SAFETY_MAX_PENALIZED_FRACTION*100:.0f}% of {serving_miners_count} serving). "
+            f"Penalizing top-{max_soft_allowed} worst soft-tier offenders, sparing {spared}. "
+            f"{len(hard_candidates)} hard-tier miners (score >= {SYBIL_HARD_PENALTY_SCORE_FLOOR}) "
+            f"penalized unconditionally."
         )
+    else:
+        if hard_candidates:
+            logger.info(
+                f"[sybil] Hard-tier bypass: {len(hard_candidates)} miners with score >= "
+                f"{SYBIL_HARD_PENALTY_SCORE_FLOOR} penalized unconditionally (safety valve not applicable)."
+            )
 
-    # Build set of hotkeys to penalize
-    penalize_set = {hk for hk, _ in candidates}
+    # Build set of hotkeys to penalize: all hard-tier + accepted soft-tier
+    penalize_set = {hk for hk, _ in hard_candidates} | {hk for hk, _ in soft_candidates}
 
     # Apply graduated penalty
     updated = {}
