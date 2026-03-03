@@ -246,6 +246,14 @@ class ConsensusEngine:
         return cosine_similarity(self.embeddings)
 
     def _apply_clustering_filter(self, sim_matrix: np.ndarray) -> np.ndarray:
+        # AgglomerativeClustering requires at least 2 samples — skip clustering
+        # when only one response is present (e.g. low-miner-count testnet scenarios).
+        if len(self.embeddings) < 2:
+            logger.warning(
+                "[CLUSTER] Only 1 response available — skipping agglomerative clustering filter."
+            )
+            return sim_matrix
+
         distance_matrix = 1 - sim_matrix
         # In scikit-learn 1.2+, 'affinity' was replaced with 'metric'
         # For precomputed distance matrices, use metric='precomputed'

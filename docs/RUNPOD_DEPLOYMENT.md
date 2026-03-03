@@ -335,7 +335,7 @@ API_PORT=8000
 # Challenge API Configuration
 # =============================================================================
 # URL of the Loosh Challenge API
-CHALLENGE_API_URL=https://challenge-api.loosh.ai
+CHALLENGE_API_URL=https://challenge.loosh.ai
 
 # API key for Challenge API (fallback - Fiber MLTS encryption is preferred)
 # The validator uses Fiber encryption for secure communication with the Challenge API.
@@ -494,7 +494,7 @@ Once files are uploaded and configured:
    SUBTENSOR_ADDRESS=wss://entrypoint-finney.opentensor.ai:443
    WALLET_NAME=validator
    HOTKEY_NAME=validator
-   CHALLENGE_API_URL=https://challenge-api.loosh.ai
+   CHALLENGE_API_URL=https://challenge.loosh.ai
    CHALLENGE_API_KEY=your-api-key
    ```
 
@@ -697,12 +697,12 @@ Connection refused to http://challenge-api:8080
 1. **Verify Challenge API URL:**
    ```bash
    # In .env, ensure correct URL
-   CHALLENGE_API_URL=https://challenge-api.loosh.ai
+   CHALLENGE_API_URL=https://challenge.loosh.ai
    ```
 
 2. **Test connectivity:**
    ```bash
-   curl https://challenge-api.loosh.ai/healthz
+   curl https://challenge.loosh.ai/healthz
    ```
 
 3. **Check API key:**
