@@ -72,7 +72,14 @@ class EvaluationResult(BaseModel):
     """Evaluation results computed by validator."""
     consensus_score: float = Field(..., description="Consensus score")
     emissions: Dict[str, float] = Field(..., description="Emission scores per miner_id")
-    best_miner_id: str = Field(..., description="Miner ID of the best response")
+    best_miner_id: Optional[str] = Field(
+        None,
+        description=(
+            "Miner ID of the best response. "
+            "None when all responses failed the prompt-relevance gate — "
+            "the challenge API will NOT forward any response to the gateway."
+        )
+    )
     heatmap_path: Optional[str] = Field(None, description="Path to uploaded heatmap")
     narrative: Optional[str] = Field(None, description="Consensus narrative")
     sybil_detection: Optional[Dict[str, Any]] = Field(None, description="Sybil detection results")
