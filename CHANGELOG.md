@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Relevance evaluation** — Improved off-topic response filtering across both single-miner and multi-miner evaluation paths.
 - **Message-based challenge scoring** — Evaluation pipeline now correctly derives a scoring reference when challenges arrive in OpenAI messages format rather than as a plain prompt field.
 - **Batch submission safety** — Improved handling of evaluation results when no qualifying response is available, preventing unqualified responses from being forwarded to the gateway.
-
+- **Optimization** — Reduced timeouts and other latency driving settings.
+- **Configuration** — Centralized configuration, added prior value comments.
+- **Sybil Scoring** — Reduced sybil penalty minimum EMA, increased sybil penalty maximum.
 ---
 
 ## [1.2.3] - 2026-02-22
