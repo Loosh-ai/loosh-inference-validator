@@ -108,7 +108,7 @@ class ConsensusEngine:
         self.labels = self.all_labels.copy()
         self.prompt_embedding = prompt_embedding
         
-        # Enhanced quality scorer (Tier 4) — when provided, replaces the
+        # Enhanced quality scorer (Tier 4) when provided, replaces the
         # heuristic-only scoring in _assess_semantic_quality with
         # embedding-aware multi-granularity metrics.
         self.quality_scorer = quality_scorer
@@ -246,11 +246,13 @@ class ConsensusEngine:
         return cosine_similarity(self.embeddings)
 
     def _apply_clustering_filter(self, sim_matrix: np.ndarray) -> np.ndarray:
-        # AgglomerativeClustering requires at least 2 samples — skip clustering
+        """Apply agglomerative clustering and keep only the dominant cluster.
+        """
+        # AgglomerativeClustering requires at least 2 samples skip clustering
         # when only one response is present (e.g. low-miner-count testnet scenarios).
         if len(self.embeddings) < 2:
             logger.warning(
-                "[CLUSTER] Only 1 response available — skipping agglomerative clustering filter."
+                "[CLUSTER] Only 1 response available, skipping agglomerative clustering filter."
             )
             return sim_matrix
 
@@ -274,7 +276,26 @@ class ConsensusEngine:
                 linkage='average'
             )
         labels = clustering.fit_predict(distance_matrix)
-        dominant_label = np.argmax(np.bincount(labels))
+
+        # Determine dominant cluster using entity-weighted vote counts when
+        # entity weights are available.  Each miner's vote is scaled by its
+        # entity cap so sybil groups cannot outvote legitimate miners.
+        num_clusters = int(labels.max()) + 1
+        if self.entity_weights is not None and len(self.entity_weights) == len(labels):
+            weighted_counts = np.zeros(num_clusters, dtype=np.float64)
+            for cluster_id in range(num_clusters):
+                cluster_mask = labels == cluster_id
+                weighted_counts[cluster_id] = float(
+                    self.entity_weights[cluster_mask].sum()
+                )
+            dominant_label = int(np.argmax(weighted_counts))
+            logger.debug(
+                f"[CLUSTER] Entity-weighted cluster selection: "
+                f"counts={weighted_counts.tolist()}, dominant={dominant_label}"
+            )
+        else:
+            dominant_label = np.argmax(np.bincount(labels))
+
         mask = labels == dominant_label
         self._apply_mask(mask)
         return cosine_similarity(self.embeddings)
@@ -905,16 +926,39 @@ class ConsensusEngine:
         if len(self.embeddings) == 0:
             return scores
         
-        # Compute average similarity to other responses for each response
-        # Exclude self-similarity (diagonal)
-        avg_similarities = []
+        # Compute average similarity to other responses for each response.
+        # When entity weights are available, use weighted averaging so that
+        # sybil responses (with capped weights) contribute less to each
+        # miner's base similarity score, preventing score contamination.
+        avg_similarities = np.zeros(len(sim_matrix), dtype=np.float64)
+        has_entity_weights = (
+            self.entity_weights is not None
+            and len(self.entity_weights) == len(sim_matrix)
+        )
+
         for i in range(len(sim_matrix)):
-            # Get similarities to all other responses (exclude self)
-            other_sims = np.delete(sim_matrix[i], i)
-            avg_sim = np.mean(other_sims) if len(other_sims) > 0 else 0.0
-            avg_similarities.append(avg_sim)
-        
-        avg_similarities = np.array(avg_similarities)
+            # Exclude self-similarity (diagonal)
+            other_indices = np.concatenate([
+                np.arange(0, i), np.arange(i + 1, len(sim_matrix))
+            ])
+            if len(other_indices) == 0:
+                continue
+
+            other_sims = sim_matrix[i, other_indices]
+
+            if has_entity_weights:
+                # Weight each peer's similarity by its entity cap so sybil
+                # duplicates cannot inflate this miner's base score.
+                other_weights = self.entity_weights[other_indices]
+                weight_sum = other_weights.sum()
+                if weight_sum > 0:
+                    avg_similarities[i] = float(
+                        np.average(other_sims, weights=other_weights)
+                    )
+                else:
+                    avg_similarities[i] = float(np.mean(other_sims))
+            else:
+                avg_similarities[i] = float(np.mean(other_sims))
         
         # Use semantic quality scores if available, otherwise fall back to word length
         if self.quality_scores is not None and len(self.quality_scores) == len(self.responses):
