@@ -5,6 +5,15 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.5] - 2026-03-11
+
+### Improved
+
+- **Sybil-resistant consensus cluster selection** — Dominant cluster is now determined by entity-weighted vote counts instead of raw headcount. Sybil groups with capped entity weights can no longer outvote legitimate miners to hijack the consensus label. Solo miners (weight 1.0) are unaffected.
+- **Sybil-resistant individual similarity scoring** — Each miner's base similarity score (40% of the individual composite) is now computed using entity-weighted averaging across peers. Sybil duplicates contribute proportionally less, preventing them from inflating or deflating honest miners' scores. Falls back to unweighted averaging when entity voting caps are disabled.
+
+---
+
 ## [1.2.4] - 2026-03-02
 
 ### Improved
