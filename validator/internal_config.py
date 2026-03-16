@@ -429,7 +429,7 @@ class InternalConfig:
     # below ``ema_score * SYBIL_PENALTY_MIN_RETENTION``.
     # Set to 0.0 to allow full effect of SYBIL_PENALTY_MAX with no floor.
     # Example: 0.15 means the worst offender still keeps 15% of their EMA.
-    SYBIL_PENALTY_MIN_RETENTION: float = 0.05 #Prior Value: 0.15 Changed in v1.2.4 3/3/2026. Intended to reduce sybil identified miner emissions. Grace Period is over.
+    SYBIL_PENALTY_MIN_RETENTION: float = 0.0 #Prior Value: 0.05 Changed in v1.2.5 3/15/2026. Zeroed to prevent sybil clusters from accumulating emissions through sheer volume at 5% retention.
     
     # Sybil score threshold below which no penalty is applied.
     # Miners with sybil_score < this value are treated as clean.
