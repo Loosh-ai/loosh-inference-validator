@@ -38,6 +38,8 @@ from validator.internal_config import (
     WEIGHT_FRESHNESS_HOURS,
     WEIGHT_FRESHNESS_HOURS_DEGRADED,
     WEIGHT_MIN_SERVING_NODES,
+    EMA_LOOKBACK_HOURS,
+    EMA_ALPHA,
     DEREGISTRATION_BLOCK_LIMIT,
     DEGRADED_MODE_THRESHOLD,
     EMERGENCY_MODE_THRESHOLD,
@@ -558,8 +560,6 @@ async def _set_weights_with_sdk(
 async def set_weights(
     db_manager: DatabaseManager,
     validator_list_fetcher: Optional["ValidatorListFetcher"] = None,
-    ema_lookback_hours: int = 24,
-    ema_alpha: float = 0.3
 ) -> None:
     """
     Set weights for miners based on their EMA performance scores.
@@ -594,8 +594,6 @@ async def set_weights(
     Args:
         db_manager: DatabaseManager instance for querying scores
         validator_list_fetcher: Optional fetcher for registered validators to exclude
-        ema_lookback_hours: Hours of history to consider for EMA (default: 24)
-        ema_alpha: EMA smoothing factor (default: 0.3)
     
     Raises:
         Exception: If weight setting fails (caller should handle retries)
@@ -745,8 +743,8 @@ async def set_weights(
         
         # 8. Get EMA scores from database
         miner_ema_scores = db_manager.get_miner_ema_scores(
-            lookback_hours=ema_lookback_hours,
-            alpha=ema_alpha
+            lookback_hours=EMA_LOOKBACK_HOURS,
+            alpha=EMA_ALPHA
         )
         logger.info(f"[set_weights] Retrieved EMA scores for {len(miner_ema_scores)} miners from DB")
         

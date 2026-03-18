@@ -95,6 +95,14 @@ class InternalConfig:
     # If fewer serving miners are found, weight setting is skipped
     WEIGHT_MIN_SERVING_NODES: int = 1
     
+    # Hours of evaluation history to include when computing EMA scores.
+    # Data older than this is excluded from the weighted average.
+    EMA_LOOKBACK_HOURS: int = 24
+    
+    # EMA smoothing factor (0 < α ≤ 1).
+    # Higher values weight recent evaluations more heavily.
+    EMA_ALPHA: float = 0.3
+    
     # =========================================================================
     # Freshness Gate Parameters
     # =========================================================================
@@ -222,10 +230,10 @@ class InternalConfig:
     # =========================================================================
     
     # Default model for challenge inference requests
-    DEFAULT_MODEL: str = "mistralai/Mistral-7B-v0.1"
+    DEFAULT_MODEL: str = "Qwen/Qwen2.5-32B-Instruct"
     
     # Default max tokens for challenge inference requests
-    DEFAULT_MAX_TOKENS: int = 512
+    DEFAULT_MAX_TOKENS: int = 12288 #Prior Value: 512 Changed in v1.2.4 3/17/2026. Intended to increase max tokens
     
     # Default temperature for challenge inference requests
     DEFAULT_TEMPERATURE: float = 0.7
@@ -238,7 +246,7 @@ class InternalConfig:
     # =========================================================================
     
     # Maximum number of challenges to process concurrently
-    MAX_CONCURRENT_CHALLENGES: int = 10
+    MAX_CONCURRENT_CHALLENGES: int = 15 #Prior Value: 10 Changed in v1.2.4 3/17/2026. Intended to increase concurrency
     
     # Maximum number of concurrent miner availability checks
     # (prevents connection pool exhaustion)
@@ -579,7 +587,7 @@ class InternalConfig:
     # Maximum effective votes per entity group regardless of group size.
     # E.g. 1.5 means a group of 5 miners sharing an IP collectively gets
     # at most 1.5 effective votes (each miner weighted at 1.5/5 = 0.3).
-    ENTITY_MAX_VOTES: float = 1.5
+    ENTITY_MAX_VOTES: float = 1.0 #Prior Value: 1.5 Changed in v1.2.4 3/17/2026. Intended to reduce entity influence
     
     # Minimum group size to trigger capping.  Groups smaller than this are
     # treated as solo miners and retain full weight.
@@ -632,6 +640,8 @@ WEIGHTS_INTERVAL_SECONDS = INTERNAL_CONFIG.WEIGHTS_INTERVAL_SECONDS
 WEIGHT_MIN_SERVING_NODES = INTERNAL_CONFIG.WEIGHT_MIN_SERVING_NODES
 WEIGHT_FRESHNESS_HOURS = INTERNAL_CONFIG.WEIGHT_FRESHNESS_HOURS
 WEIGHT_FRESHNESS_HOURS_DEGRADED = INTERNAL_CONFIG.WEIGHT_FRESHNESS_HOURS_DEGRADED
+EMA_LOOKBACK_HOURS = INTERNAL_CONFIG.EMA_LOOKBACK_HOURS
+EMA_ALPHA = INTERNAL_CONFIG.EMA_ALPHA
 DEREGISTRATION_BLOCK_LIMIT = INTERNAL_CONFIG.DEREGISTRATION_BLOCK_LIMIT
 DEGRADED_MODE_THRESHOLD = INTERNAL_CONFIG.DEGRADED_MODE_THRESHOLD
 EMERGENCY_MODE_THRESHOLD = INTERNAL_CONFIG.EMERGENCY_MODE_THRESHOLD
