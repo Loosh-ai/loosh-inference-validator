@@ -130,8 +130,8 @@ EXPOSE 8000
 # Run the validator using uvicorn
 # The validator runs as a FastAPI application
 # API_HOST and API_PORT can be set via environment variables (defaults to 0.0.0.0:8000)
-# WALLET_PATH can be set to persistent storage location (defaults to /workspace/.bittensor/wallets for RunPod)
-# Source .env from /workspace (RunPod) or local .env, use string reference to avoid __main__ module issue
+# WALLET_PATH: source for copy to /root/.bittensor/wallets (default: /workspace/.bittensor/wallets for RunPod)
+# Set WALLET_PATH in env when using docker-compose with /data mount (e.g. /data/validators/wallets)
 CMD ["bash", "-c", "\
     source /workspace/.env 2>/dev/null || source .env 2>/dev/null || true; \
     WALLET_SOURCE=${WALLET_PATH:-/workspace/.bittensor/wallets}; \

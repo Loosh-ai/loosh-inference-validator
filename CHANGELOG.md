@@ -5,6 +5,19 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-03-17
+
+### Changed
+
+- **Challenge model upgraded** — Default challenge model changed from `mistralai/Mistral-7B-v0.1` to `Qwen/Qwen2.5-32B-Instruct`. Miners must now serve a larger, instruction-tuned 32B model, raising the quality bar for challenge evaluation.
+- **Challenge max tokens increased** — `DEFAULT_MAX_TOKENS` raised from 512 to 12288, enabling evaluation of longer and more complex responses and testing sustained generation capability.
+- **Challenge concurrency increased** — `MAX_CONCURRENT_CHALLENGES` raised from 10 to 15, increasing per-cycle evaluation throughput to maintain coverage alongside the larger model and longer generations.
+- **Entity group influence reduced** — `ENTITY_MAX_VOTES` lowered from 1.5 to 1.0. Miners sharing an IP (entity group) now collectively hold at most 1.0 effective vote, further constraining multi-UID influence on consensus.
+- **Sybil penalty floor zeroed** — `SYBIL_PENALTY_MIN_RETENTION` lowered from 0.05 to 0.0. Fully-flagged sybil miners can now have their weight reduced to zero. The previous 5% retention floor allowed sybil clusters to accumulate emissions through sheer volume.
+- **EMA parameters centralized** — `EMA_LOOKBACK_HOURS` and `EMA_ALPHA` relocated from `set_weights.py` to `internal_config.py`, consistent with the centralized configuration pattern established in 1.2.0. No runtime behavior change. 
+
+---
+
 ## [1.2.5] - 2026-03-11
 
 ### Improved
@@ -461,6 +474,8 @@ Initial production release of loosh-inference-validator.
 
 ---
 
+[1.2.6]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.5...v1.2.6
+[1.2.5]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.1...v1.2.2
