@@ -5,6 +5,14 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - 2026-03-20
+
+### Changed
+
+- **Sybil penalty floor restored** — `SYBIL_PENALTY_MIN_RETENTION` restored from 0.0 to 0.02. The system is identifying all miners as sybil and the weight setting is failing. this is a temp measure while we resolve the sybil detection.
+
+---
+
 ## [1.2.6] - 2026-03-17
 
 ### Changed
