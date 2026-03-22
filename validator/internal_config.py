@@ -569,6 +569,18 @@ class InternalConfig:
     FALLBACK_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     
     # =========================================================================
+    # Challenge Distribution Weighting
+    # =========================================================================
+
+    # When True, selection weights are fetched from the Challenge API during
+    # each metagraph refresh and used for weighted miner sampling.
+    SELECTION_WEIGHT_REFRESH_ENABLED: bool = True
+
+    # Default selection weight assigned to miners with no known weight.
+    # 1.0 = full priority (fail-open for unknown miners).
+    SELECTION_WEIGHT_DEFAULT: float = 1.0
+
+    # =========================================================================
     # Entity-Based Voting Caps
     # =========================================================================
     # Limits how much influence a suspected sybil entity can exert during
@@ -699,6 +711,10 @@ QUALITY_COHERENCE_EMBEDDING_CHAIN = INTERNAL_CONFIG.QUALITY_COHERENCE_EMBEDDING_
 QUALITY_PROMPT_COVERAGE_ENABLED = INTERNAL_CONFIG.QUALITY_PROMPT_COVERAGE_ENABLED
 QUALITY_COVERAGE_THRESHOLD = INTERNAL_CONFIG.QUALITY_COVERAGE_THRESHOLD
 QUALITY_COMPLEXITY_ENABLED = INTERNAL_CONFIG.QUALITY_COMPLEXITY_ENABLED
+
+# Challenge Distribution Weighting
+SELECTION_WEIGHT_REFRESH_ENABLED = INTERNAL_CONFIG.SELECTION_WEIGHT_REFRESH_ENABLED
+SELECTION_WEIGHT_DEFAULT = INTERNAL_CONFIG.SELECTION_WEIGHT_DEFAULT
 
 # Entity-Based Voting Caps
 ENTITY_VOTING_CAPS_ENABLED = INTERNAL_CONFIG.ENTITY_VOTING_CAPS_ENABLED
