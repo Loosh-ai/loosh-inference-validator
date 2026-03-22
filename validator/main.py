@@ -56,7 +56,10 @@ from validator.internal_config import (
     CHALLENGE_PENDING_NODE_POLL_INTERVAL,
     CHALLENGE_PENDING_PROCESSOR_LOOP_DELAY,
     CHALLENGE_PENDING_PROCESSOR_ERROR_DELAY,
+    SELECTION_WEIGHT_REFRESH_ENABLED,
+    SELECTION_WEIGHT_DEFAULT,
 )
+from validator.network.challenge_api_auth import merge_auth_headers
 
 
 def convert_challenge_create_to_api_response(challenge_create: ChallengeCreate) -> ChallengeAPIResponse:
@@ -338,6 +341,75 @@ async def main_loop():
     # reporter can observe ALL registered miners (not just available ones).
     _all_metagraph_nodes: List[Node] = list(nodes)  # seeded with initial fetch
 
+    # Per-miner selection weights for challenge distribution.
+    # Populated by _refresh_selection_weights() from the Challenge API's
+    # priority_weight field.  Default = 1.0 (unknown miners get full priority).
+    _selection_weights: Dict[str, float] = {}
+
+    def _weighted_sample_no_replace(
+        population: List[Node], weights: List[float], k: int
+    ) -> List[Node]:
+        """Sample *k* items from *population* without replacement, weighted by selection priority."""
+        selected: List[Node] = []
+        indices = list(range(len(population)))
+        remaining_weights = list(weights)
+        for _ in range(k):
+            chosen = random.choices(indices, weights=remaining_weights, k=1)[0]
+            selected.append(population[chosen])
+            remaining_weights[chosen] = 0.0
+            if sum(remaining_weights) <= 0:
+                break
+        return selected
+
+    async def _refresh_selection_weights() -> None:
+        """Fetch challenge distribution weights from the Challenge API.
+
+        Called after each metagraph refresh.  On failure the previous
+        weights are retained (fail-open).
+        """
+        nonlocal _selection_weights
+        if not SELECTION_WEIGHT_REFRESH_ENABLED:
+            return
+
+        all_hotkeys = [n.hotkey for n in _all_metagraph_nodes]
+        if not all_hotkeys:
+            return
+
+        url = f"{config.challenge_api_url.rstrip('/')}/analytics/sybil-scores/batch"
+        try:
+            body_bytes = json.dumps({"miner_hotkeys": all_hotkeys}).encode()
+            headers = merge_auth_headers(
+                {"Content-Type": "application/json"},
+                body=body_bytes,
+                api_key=config.challenge_api_key,
+            )
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(url, content=body_bytes, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            new_weights: Dict[str, float] = {}
+            for hk, score_data in data.get("scores", {}).items():
+                if isinstance(score_data, dict):
+                    new_weights[hk] = float(
+                        score_data.get("priority_weight", SELECTION_WEIGHT_DEFAULT)
+                    )
+                else:
+                    new_weights[hk] = SELECTION_WEIGHT_DEFAULT
+
+            _selection_weights = new_weights
+            at_full = sum(1 for w in new_weights.values() if w >= 1.0)
+            at_zero = sum(1 for w in new_weights.values() if w <= 0.0)
+            partial = len(new_weights) - at_full - at_zero
+            logger.info(
+                f"Selection weights refreshed: {len(new_weights)} miners "
+                f"({at_full} full, {partial} partial, {at_zero} zero)"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to refresh selection weights (retaining stale): {e}"
+            )
+
     # Initialize miner network reporter (sends metagraph observations for sybil scoring)
     miner_network_reporter = None
     try:
@@ -381,6 +453,9 @@ async def main_loop():
                         inference_validator.update_node_map(refreshed_nodes)
                     
                     logger.info(f"Metagraph refreshed: {len(refreshed_nodes)} nodes (availability worker updated)")
+
+                    # Refresh challenge distribution weights from Challenge API
+                    await _refresh_selection_weights()
                     
                 except Exception as e:
                     logger.error(f"Failed to refresh metagraph: {e}", exc_info=True)
@@ -672,15 +747,29 @@ async def main_loop():
                                 f"from {len(current_available_nodes) if current_available_nodes else 0} available nodes"
                             )
                         
-                        # Per-challenge random sampling: pick up to MAX_MINERS
-                        # from the full available pool so every miner gets a fair
-                        # chance across challenge rounds.
+                        # Per-challenge weighted sampling: pick up to MAX_MINERS
+                        # from the full available pool.  Selection weights
+                        # from the Challenge API prioritize high-performing
+                        # miners; unknown miners default to full priority.
                         max_miners_per_challenge = INTERNAL_CONFIG.MAX_MINERS
                         if len(filtered_nodes) > max_miners_per_challenge:
-                            selected_miners = random.sample(filtered_nodes, max_miners_per_challenge)
+                            weights = [
+                                _selection_weights.get(n.hotkey, SELECTION_WEIGHT_DEFAULT)
+                                for n in filtered_nodes
+                            ]
+                            total_w = sum(weights)
+                            if total_w > 0:
+                                selected_miners = _weighted_sample_no_replace(
+                                    filtered_nodes, weights, max_miners_per_challenge
+                                )
+                            else:
+                                selected_miners = random.sample(
+                                    filtered_nodes, max_miners_per_challenge
+                                )
                             logger.info(
-                                f"Challenge {challenge_id[:8]}...: randomly selected "
-                                f"{max_miners_per_challenge} miners from {len(filtered_nodes)} available"
+                                f"Challenge {challenge_id[:8]}...: selected "
+                                f"{len(selected_miners)} miners from {len(filtered_nodes)} available "
+                                f"(weighted={'yes' if total_w > 0 else 'fallback-uniform'})"
                             )
                         else:
                             selected_miners = filtered_nodes

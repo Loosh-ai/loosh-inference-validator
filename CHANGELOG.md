@@ -5,6 +5,16 @@ All notable changes to loosh-inference-validator will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.8] - 2026-03-21
+
+### New Features
+
+- **Weighted challenge miner selection** — Miner selection for challenges now uses weighted random sampling without replacement instead of uniform `random.sample()`. Selection weights are fetched from the Challenge API's `priority_weight` field after each metagraph refresh. Miners with higher priority receive proportionally more challenges; Falls back to uniform random sampling if the fetch fails (`main.py`).
+- **Selection weight refresh** — New `_refresh_selection_weights()` coroutine fetches `priority_weight` for all metagraph miners from the Challenge API's `POST /analytics/sybil-scores/batch` endpoint using HMAC auth. Called after each metagraph refresh cycle. On failure, stale weights are retained (fail-open). Unknown miners default to weight `1.0` (`main.py`).
+- **Selection weight configuration** — Added `SELECTION_WEIGHT_REFRESH_ENABLED` (default: `True`) and `SELECTION_WEIGHT_DEFAULT` (default: `1.0`) to `InternalConfig` for controlling the weighted selection behavior (`internal_config.py`).
+
+---
+
 ## [1.2.7] - 2026-03-20
 
 ### Changed
@@ -482,6 +492,8 @@ Initial production release of loosh-inference-validator.
 
 ---
 
+[1.2.8]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.7...v1.2.8
+[1.2.7]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/Loosh-ai/loosh-inference-validator/compare/v1.2.3...v1.2.4
